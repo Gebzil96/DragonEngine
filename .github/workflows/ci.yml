@@ -22,5 +22,8 @@ jobs:
       - name: Check project structure
         run: python tools/check_structure.py
 
+      - name: Check JSON files
+        run: python tools/check_json.py
+
       - name: Compile all Python files
         run: python -m compileall .
