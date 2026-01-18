@@ -8,7 +8,28 @@ import json
 # 🧠 ЛОГИКА: путь до engine (где лежат config_engine.py и project_manager.py)
 sys.path.append(r"C:\Users\Boris\Desktop\DragonEngine\engine")  # 🔧 МОЖНО МЕНЯТЬ
 
-from config_engine import *  # 🧠 ЛОГИКА: все UI-параметры берём отсюда
+from config_engine import (
+    BUTTON_BG_COLOR,
+    BUTTON_BORDER_COLOR,
+    BUTTON_BORDER_WIDTH,
+    BUTTON_HOVER_COLOR,
+    BUTTON_TEXT_COLOR,
+    DEFAULT_FONT_SIZE,
+    TITLE_FONT_SIZE,
+    TITLE_Y,
+    TITLE_GAP_Y,
+    UI_MARGIN_X,
+    UI_TOP_Y,
+    UI_GAP_X,
+    BUTTON_W,          # добавлено
+    BUTTON_H,          # добавлено
+    ENGINE_VERSION,    # добавлено
+    DEFAULT_SCENE_NAME,# добавлено
+    EDITOR_HINT_COLOR, # добавлено
+    EDITOR_BG_COLOR,
+    EDITOR_TEXT_COLOR,
+)
+
 from project_manager import (
     list_all_projects,     # ✅ ВСЕ проекты из реестра
     register_project,      # ✅ регистрируем любой созданный/открытый проект
@@ -140,8 +161,7 @@ def run_editor(window_width: int, window_height: int, window_title: str, fps: in
     title_font = pygame.font.SysFont(None, TITLE_FONT_SIZE)
 
     status_message = ""
-    current_project: Project | None = None
-
+   
     # ------------------------------------------------------------
     # ✅ ВАЖНО: считаем Y для строки "Менеджер проектов:" заранее
     # и ставим кнопки НИЖЕ неё, чтобы они не закрашивали текст.
@@ -179,7 +199,6 @@ def run_editor(window_width: int, window_height: int, window_title: str, fps: in
                             if created is None:
                                 status_message = "Ошибка: проект уже существует."
                             else:
-                                current_project = created
                                 status_message = f"Проект '{created.name}' создан."
                                 print(f"Открытие стартовой сцены: {created.start_scene}")
 

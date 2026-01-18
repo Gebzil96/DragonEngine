@@ -44,19 +44,15 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
 
     screen = pygame.display.set_mode((window_width, window_height))  # 🧠 ЛОГИКА: создаём окно
     pygame.display.set_caption("Редактор сцены")  # 🧠 ЛОГИКА: заголовок окна
-    clock = pygame.time.Clock()  # 🧠 ЛОГИКА: FPS
-
+    
     font = pygame.font.SysFont(None, FONT_SIZE)  # 🧠 ЛОГИКА: шрифт для текста
     scene_data = load_scene(scene_path)  # 🧠 ЛОГИКА: загрузка сцены
     selected_entity = None  # 🧠 ЛОГИКА: сущность, которая выбрана для перемещения
 
     running = True  # 🧠 ЛОГИКА: главный цикл редактора
     while running:
-        dt = clock.tick(fps) / 1000.0  # 🧠 ЛОГИКА: dt
-
         mouse_pos = pygame.mouse.get_pos()  # 🧠 ЛОГИКА: положение мыши
-        mouse_click = pygame.mouse.get_pressed()  # 🧠 ЛОГИКА: нажатие кнопки мыши
-
+        
         # --- СОБЫТИЯ ---
         for event in pygame.event.get():  # 🧠 ЛОГИКА: очередь событий
             if event.type == pygame.QUIT:  # 🧠 ЛОГИКА: закрытие окна
