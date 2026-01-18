@@ -25,6 +25,10 @@ FORBIDDEN_GIT_PATTERNS = [
     "__pycache__/",
     ".pyc",
     ".pyo",
+    "Thumbs.db",
+    ".DS_Store",
+    ".log",
+    ".tmp",
 ]
 
 
