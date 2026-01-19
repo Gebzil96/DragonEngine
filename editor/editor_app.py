@@ -21,11 +21,11 @@ from config_engine import (
     UI_MARGIN_X,
     UI_TOP_Y,
     UI_GAP_X,
-    BUTTON_W,          # добавлено
-    BUTTON_H,          # добавлено
-    ENGINE_VERSION,    # добавлено
-    DEFAULT_SCENE_NAME,# добавлено
-    EDITOR_HINT_COLOR, # добавлено
+    BUTTON_W,
+    BUTTON_H,
+    ENGINE_VERSION,
+    DEFAULT_SCENE_NAME,
+    EDITOR_HINT_COLOR,
     EDITOR_BG_COLOR,
     EDITOR_TEXT_COLOR,
 )
@@ -37,6 +37,7 @@ from project_manager import (
     save_last_project,
     open_project_by_path,
 )
+
 from editor.scene_editor import run_scene_editor  # 🧠 ЛОГИКА: редактор сцены
 
 
@@ -47,9 +48,10 @@ root.withdraw()
 
 class Project:
     """🧠 ЛОГИКА: локальный класс проекта (используется при создании)."""
+
     def __init__(self, path: Path, name: str):
-        self.root = path                 # 🧠 ЛОГИКА: корневая папка проекта
-        self.name = name                 # 🧠 ЛОГИКА: имя проекта
+        self.root = path                      # 🧠 ЛОГИКА: корневая папка проекта
+        self.name = name                      # 🧠 ЛОГИКА: имя проекта
         self.start_scene: Path | None = None  # 🧠 ЛОГИКА: путь к стартовой сцене
 
     def set_start_scene(self, scene_path: Path):
@@ -150,7 +152,10 @@ def open_selected_project() -> Path | None:
     return Path(folder)
 
 
-def run_editor(window_width: int, window_height: int, window_title: str, fps: int, projects_dir: Path):
+# ============================================================
+# ✅ ВНУТРЕННЯЯ РЕАЛИЗАЦИЯ (UI НЕ МЕНЯЕМ)
+# ============================================================
+def _run_editor_impl(window_width: int, window_height: int, window_title: str, fps: int, projects_dir: Path):
     """🧠 ЛОГИКА: менеджер проектов."""
     pygame.init()
     screen = pygame.display.set_mode((window_width, window_height))
@@ -161,7 +166,7 @@ def run_editor(window_width: int, window_height: int, window_title: str, fps: in
     title_font = pygame.font.SysFont(None, TITLE_FONT_SIZE)
 
     status_message = ""
-   
+
     # ------------------------------------------------------------
     # ✅ ВАЖНО: считаем Y для строки "Менеджер проектов:" заранее
     # и ставим кнопки НИЖЕ неё, чтобы они не закрашивали текст.
@@ -282,3 +287,70 @@ def run_editor(window_width: int, window_height: int, window_title: str, fps: in
         pygame.display.flip()
 
     pygame.quit()
+
+
+# ============================================================
+# ✅ ПУБЛИЧНЫЙ API ДЛЯ engine_main.py (совместимость, НЕ UI)
+# ============================================================
+def run_editor(*args, **kwargs):
+    """
+    🧠 ЛОГИКА: адаптер аргументов (UI НЕ МЕНЯЕМ).
+
+    Поддерживает варианты вызова:
+      1) run_editor(w, h, title, fps, projects_dir)
+      2) run_editor(window_width=..., window_height=..., window_title=..., fps=..., projects_dir=...)
+      3) run_editor({...})  # один dict параметров
+      4) другие имена ключей: width/height/title/FPS и т.д.
+    """
+
+    # ✅ Случай: один dict позиционно: run_editor(config_dict)
+    if len(args) == 1 and isinstance(args[0], dict) and not kwargs:
+        kwargs = dict(args[0])
+        args = ()
+
+    # ✅ Случай: позиционные аргументы
+    if args and len(args) >= 5:
+        return _run_editor_impl(*args[:5])
+
+    # ✅ helper: выбрать первое найденное имя ключа
+    def _pick(d: dict, *names):
+        for n in names:
+            if n in d and d[n] is not None:
+                return d[n]
+        return None
+
+    window_width = _pick(kwargs, "window_width", "width", "w", "WINDOW_WIDTH")
+    window_height = _pick(kwargs, "window_height", "height", "h", "WINDOW_HEIGHT")
+    window_title = _pick(kwargs, "window_title", "title", "caption", "WINDOW_TITLE")
+    fps = _pick(kwargs, "fps", "FPS", "target_fps")
+    projects_dir = _pick(kwargs, "projects_dir", "projects_path", "PROJECTS_DIR")
+
+    # ✅ Fallback: если часть параметров не передали, берём дефолты
+    try:
+        from config_engine import WINDOW_WIDTH as _DW, WINDOW_HEIGHT as _DH, FPS as _DFPS
+    except Exception:
+        _DW, _DH, _DFPS = 1280, 720, 60  # 🔧 МОЖНО МЕНЯТЬ, но лучше задать в config_engine
+
+    if window_width is None:
+        window_width = _DW
+    if window_height is None:
+        window_height = _DH
+    if fps is None:
+        fps = _DFPS
+    if window_title is None:
+        window_title = "DragonEngine"
+    if projects_dir is None:
+        # 🔧 МОЖНО МЕНЯТЬ: дефолтная папка "projects" рядом с репозиторием
+        projects_dir = (Path(__file__).resolve().parents[1] / "projects")
+
+    # ✅ Нормализуем projects_dir в Path
+    if not isinstance(projects_dir, Path):
+        projects_dir = Path(str(projects_dir))
+
+    return _run_editor_impl(
+        window_width=int(window_width),
+        window_height=int(window_height),
+        window_title=str(window_title),
+        fps=int(fps),
+        projects_dir=projects_dir,
+    )
