@@ -1,11 +1,12 @@
 # engine/project_manager.py
 # 🧠 ЛОГИКА: менеджер проектов (реестр, открыть проект, последний проект)
 # ✅ Экспортирует ИМЕНА, которые ждёт editor/editor_app.py:
-#    list_all_projects, register_project, open_last_project, save_last_project, open_project_by_path
+#    list_all_projects, register_project, open_last_project, save_last_project, open_project_by_path, delete_project
 
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -201,6 +202,34 @@ def open_last_project(projects_dir: Path) -> ProjectInfo | None:
         return info
 
     return None
+
+
+# ============================================================
+# 🗑 Удаление проекта (НОВОЕ)
+# ============================================================
+
+def delete_project(project_root: Path) -> bool:
+    """
+    🧠 ЛОГИКА: физически удаляет папку проекта + чистит projects_index.json.
+
+    ⚠️ ВАЖНО:
+    - last_project.json специально не трогаем (fallback уже есть в open_last_project).
+    """
+    project_root = project_root.resolve()
+
+    if not project_root.exists():
+        return False
+
+    # ✅ Удаляем папку проекта (ОСТОРОЖНО!)
+    shutil.rmtree(project_root)
+
+    # ✅ Чистим реестр
+    records = _load_index_records()
+    root_norm = _normalize_path(project_root)
+    records = [r for r in records if r.get("root") != root_norm]
+    _save_index_records(records)
+
+    return True
 
 
 # ============================================================

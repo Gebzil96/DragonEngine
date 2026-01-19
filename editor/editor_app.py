@@ -1,9 +1,10 @@
 import sys
 import pygame
 import tkinter as tk
-from tkinter import simpledialog, filedialog
+from tkinter import simpledialog, filedialog, messagebox  # ✅ НОВОЕ: подтверждение удаления
 from pathlib import Path
 import json
+import math  # ✅ НОВОЕ: для плавной анимации (sin)
 
 # 🧠 ЛОГИКА: путь до engine (где лежат config_engine.py и project_manager.py)
 sys.path.append(r"C:\Users\Boris\Desktop\DragonEngine\engine")  # 🔧 МОЖНО МЕНЯТЬ
@@ -36,6 +37,7 @@ from project_manager import (
     open_last_project,
     save_last_project,
     open_project_by_path,
+    delete_project,        # ✅ УДАЛЕНИЕ проекта
 )
 
 from editor.scene_editor import run_scene_editor  # 🧠 ЛОГИКА: редактор сцены
@@ -78,6 +80,22 @@ def _draw_button(screen, font, rect, text, mouse_pos):
     label = font.render(text, True, BUTTON_TEXT_COLOR)  # 🧠 ЛОГИКА: текст
     screen.blit(label, label.get_rect(center=rect.center))  # 🧠 ЛОГИКА: центрируем текст
     return is_hover
+
+
+def _clamp_int(v: float, lo: int, hi: int) -> int:
+    """🧠 ЛОГИКА: безопасно ограничиваем значение и приводим к int."""
+    return int(max(lo, min(hi, v)))
+
+
+def _blend_color(base_rgb: tuple[int, int, int], add_rgb: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+    """
+    🧠 ЛОГИКА: смешиваем цвета.
+    t=0 -> base, t=1 -> base+add (с ограничением).
+    """
+    r = _clamp_int(base_rgb[0] + add_rgb[0] * t, 0, 255)
+    g = _clamp_int(base_rgb[1] + add_rgb[1] * t, 0, 255)
+    b = _clamp_int(base_rgb[2] + add_rgb[2] * t, 0, 255)
+    return (r, g, b)
 
 
 def check_scene_file(scene_path: Path) -> bool:
@@ -184,10 +202,48 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
     btn_last_project = pygame.Rect(UI_MARGIN_X + BUTTON_W + UI_GAP_X, ui_buttons_y, BUTTON_W, BUTTON_H)
     btn_open_project = pygame.Rect(UI_MARGIN_X, ui_buttons_y + BUTTON_H + UI_GAP_X, BUTTON_W, BUTTON_H)
 
+    # ------------------------------------------------------------
+    # ✅ Список проектов (интерактивный)
+    # ------------------------------------------------------------
+
+    selected_project_index: int | None = None  # 🧠 ЛОГИКА: выбранный индекс в all_projects
+
+    # 🖱️🖱️ ЛОГИКА: double click
+    last_click_time = 0                 # 🧠 ЛОГИКА: время последнего клика (ms)
+    last_click_index: int | None = None # 🧠 ЛОГИКА: индекс последнего клика
+
+    DOUBLE_CLICK_MS = 350  # 🔧 МОЖНО МЕНЯТЬ: окно двойного клика (ms)
+
+    # 🎨 UI списка проектов
+    PROJECT_LIST_X = UI_MARGIN_X  # 🔧 МОЖНО МЕНЯТЬ
+    PROJECT_LIST_Y = 240          # 🔧 МОЖНО МЕНЯТЬ
+    PROJECT_ITEM_W = 420          # 🔧 МОЖНО МЕНЯТЬ
+    PROJECT_ITEM_H = 36           # 🔧 МОЖНО МЕНЯТЬ
+    PROJECT_ITEM_GAP = 8          # 🔧 МОЖНО МЕНЯТЬ
+
+    # 🎞️ Анимация кнопки удаления
+    DELETE_PULSE_SPEED = 3.2      # 🔧 МОЖНО МЕНЯТЬ: скорость пульсации
+    DELETE_PULSE_ADD = (90, 30, 30)  # 🔧 МОЖНО МЕНЯТЬ: насколько “подсвечивать” (RGB добавка)
+
+    def _get_delete_button_rect(selected_index: int) -> pygame.Rect:
+        """
+        🧠 ЛОГИКА: кнопка удаления всегда рядом с выбранной строкой.
+        """
+        y = PROJECT_LIST_Y + selected_index * (PROJECT_ITEM_H + PROJECT_ITEM_GAP)
+        return pygame.Rect(
+            UI_MARGIN_X + PROJECT_ITEM_W + UI_GAP_X,  # справа от списка
+            y,                                        # на уровне выбранного проекта
+            BUTTON_W,
+            BUTTON_H,
+        )
+
     running = True
     while running:
         clock.tick(fps)
         mouse_pos = pygame.mouse.get_pos()
+
+        # ✅ список проектов (реестр)
+        all_projects = list_all_projects()
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -248,6 +304,76 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                                 run_scene_editor(info.start_scene, window_width, window_height, fps)
                                 running = False
 
+                # ------------------------------------------------------------
+                # 🖱️ Клик по проектам (выделение + двойной клик открыть)
+                # ------------------------------------------------------------
+                clicked_index: int | None = None
+                y = PROJECT_LIST_Y
+
+                for i, p in enumerate(all_projects):
+                    item_rect = pygame.Rect(PROJECT_LIST_X, y, PROJECT_ITEM_W, PROJECT_ITEM_H)
+
+                    if item_rect.collidepoint(mouse_pos):
+                        clicked_index = i
+                        break
+
+                    y += PROJECT_ITEM_H + PROJECT_ITEM_GAP
+
+                if clicked_index is not None:
+                    # ✅ выделяем проект
+                    selected_project_index = clicked_index
+
+                    # ✅ проверяем двойной клик
+                    now_ms = pygame.time.get_ticks()
+                    is_double_click = (
+                        last_click_index == clicked_index
+                        and (now_ms - last_click_time) <= DOUBLE_CLICK_MS
+                    )
+
+                    last_click_index = clicked_index
+                    last_click_time = now_ms
+
+                    # 🖱️🖱️ двойной клик → открыть проект
+                    if is_double_click:
+                        info = all_projects[clicked_index]
+
+                        # ✅ РЕЕСТР + LAST
+                        register_project(info.root)
+                        save_last_project(info.root)
+
+                        if check_scene_file(info.start_scene):
+                            run_scene_editor(info.start_scene, window_width, window_height, fps)
+                            running = False
+
+                # ------------------------------------------------------------
+                # 🗑 Удалить выделенный проект (кнопка рядом с выбранным)
+                # + подтверждение
+                # ------------------------------------------------------------
+                if selected_project_index is not None and 0 <= selected_project_index < len(all_projects):
+                    delete_rect = _get_delete_button_rect(selected_project_index)
+
+                    if delete_rect.collidepoint(mouse_pos):
+                        info = all_projects[selected_project_index]
+
+                        # ✅ Подтверждение удаления
+                        confirm = messagebox.askyesno(
+                            "Удаление проекта",
+                            f"Удалить проект '{info.name}'?\n\nПапка будет удалена полностью:\n{info.root}"
+                        )
+
+                        if confirm:
+                            ok = delete_project(info.root)
+
+                            if ok:
+                                status_message = f"Проект '{info.name}' удалён."
+                                selected_project_index = None
+                                last_click_index = None
+                                last_click_time = 0
+                            else:
+                                status_message = "Ошибка: проект не найден для удаления."
+                        else:
+                            status_message = "Удаление отменено."
+
         # --- РЕНДЕР ---
         screen.fill(EDITOR_BG_COLOR)
 
@@ -268,17 +394,69 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         _draw_button(screen, font, btn_last_project, "Последний проект", mouse_pos)
         _draw_button(screen, font, btn_open_project, "Открыть проект", mouse_pos)
 
-        # ✅ ВСЕ проекты из реестра projects_index.json
-        all_projects = list_all_projects()
-        projects_lines = ["Проекты:"]
+        # ------------------------------------------------------------
+        # ✅ Список проектов (интерактивный)
+        # ------------------------------------------------------------
+        screen.blit(
+            font.render("Проекты:", True, EDITOR_TEXT_COLOR),
+            (PROJECT_LIST_X, PROJECT_LIST_Y - 30)  # 🔧 МОЖНО МЕНЯТЬ: отступ заголовка
+        )
 
+        y = PROJECT_LIST_Y
         if all_projects:
-            for p in all_projects:
-                projects_lines.append(f"- {p.name}")
-        else:
-            projects_lines.append("(пока пусто)")
+            for i, p in enumerate(all_projects):
+                item_rect = pygame.Rect(PROJECT_LIST_X, y, PROJECT_ITEM_W, PROJECT_ITEM_H)
 
-        _draw_lines(screen, font, projects_lines, x=UI_MARGIN_X, y=240, color=EDITOR_TEXT_COLOR)
+                # фон строки
+                if selected_project_index == i:
+                    pygame.draw.rect(screen, (70, 100, 160), item_rect)  # 🔧 МОЖНО МЕНЯТЬ: цвет выделения
+                else:
+                    pygame.draw.rect(screen, (40, 40, 46), item_rect)    # 🔧 МОЖНО МЕНЯТЬ: обычный фон
+
+                # рамка строки
+                pygame.draw.rect(screen, BUTTON_BORDER_COLOR, item_rect, 1)
+
+                # текст проекта
+                screen.blit(
+                    font.render(p.name, True, EDITOR_TEXT_COLOR),
+                    (item_rect.x + 10, item_rect.y + 6)  # 🔧 МОЖНО МЕНЯТЬ: паддинги текста
+                )
+
+                y += PROJECT_ITEM_H + PROJECT_ITEM_GAP
+        else:
+            _draw_lines(
+                screen,
+                font,
+                ["(пока пусто)"],
+                x=PROJECT_LIST_X,
+                y=PROJECT_LIST_Y,
+                color=EDITOR_TEXT_COLOR
+            )
+
+        # ------------------------------------------------------------
+        # ✅ Кнопка удаления (рядом с выбранным) + плавная подсветка
+        # ------------------------------------------------------------
+        if selected_project_index is not None and 0 <= selected_project_index < len(all_projects):
+            delete_rect = _get_delete_button_rect(selected_project_index)
+
+            # 🎞️ Пульсация: 0..1..0
+            t = pygame.time.get_ticks() / 1000.0  # секунды
+            pulse = (math.sin(t * DELETE_PULSE_SPEED) + 1.0) * 0.5  # 0..1
+
+            # фон кнопки: берём базовый и добавляем подсветку
+            base_bg = BUTTON_BG_COLOR
+            pulse_bg = _blend_color(base_bg, DELETE_PULSE_ADD, pulse)
+
+            # hover усиливает подсветку
+            is_hover = delete_rect.collidepoint(mouse_pos)
+            if is_hover:
+                pulse_bg = _blend_color(pulse_bg, (50, 20, 20), 1.0)  # 🔧 МОЖНО МЕНЯТЬ
+
+            pygame.draw.rect(screen, pulse_bg, delete_rect)
+            pygame.draw.rect(screen, BUTTON_BORDER_COLOR, delete_rect, BUTTON_BORDER_WIDTH)
+
+            label = font.render("Удалить проект", True, BUTTON_TEXT_COLOR)
+            screen.blit(label, label.get_rect(center=delete_rect.center))
 
         # Статус
         if status_message:
