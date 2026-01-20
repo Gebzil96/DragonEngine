@@ -6,7 +6,7 @@ from pathlib import Path
 import json
 import math
 import time
-import os  # ✅ НОВОЕ: для подсчёта размера папки
+import os  # ✅ НОВОЕ: для подсчёта размера папки + принудительного выхода
 
 # ✅ WinAPI для принудительного возврата фокуса (Windows)
 import ctypes
@@ -54,6 +54,41 @@ root = tk.Tk()
 root.withdraw()
 
 
+# ============================================================
+# ✅ ЕДИНЫЙ ЖЁСТКИЙ ВЫХОД (без циклических импортов)
+# ============================================================
+def force_quit(exit_code: int = 0) -> None:
+    """
+    🧠 ЛОГИКА:
+    Гарантированно завершает процесс Python, чтобы не оставалось "висящих" окон/консолей.
+
+    1) pygame.quit() — корректно закрываем pygame
+    2) tkinter root.destroy() — закрываем контекст диалогов
+    3) sys.exit() — нормальный выход
+    4) os._exit() — жёсткая страховка, если что-то удерживает процесс
+    """
+    try:
+        pygame.quit()
+    except Exception:
+        pass
+
+    # ⚠️ ПАРАМЕТР (можно менять): пытаться закрыть tkinter при выходе
+    CLOSE_TKINTER = True
+
+    if CLOSE_TKINTER:
+        try:
+            r = tk._default_root
+            if r is not None:
+                r.destroy()
+        except Exception:
+            pass
+
+    try:
+        sys.exit(exit_code)
+    except SystemExit:
+        os._exit(exit_code)  # 🧨 ГАРАНТИЯ: мгновенно завершаем процесс
+
+
 class Project:
     """🧠 ЛОГИКА: локальный класс проекта (используется при создании)."""
 
@@ -77,6 +112,27 @@ def _draw_lines(screen, font, lines, x, y, color):
 def _draw_button(screen, font, rect, text, mouse_pos):
     is_hover = rect.collidepoint(mouse_pos)
     bg = BUTTON_HOVER_COLOR if is_hover else BUTTON_BG_COLOR
+
+    pygame.draw.rect(screen, bg, rect)
+    pygame.draw.rect(screen, BUTTON_BORDER_COLOR, rect, BUTTON_BORDER_WIDTH)
+
+    label = font.render(text, True, BUTTON_TEXT_COLOR)
+    screen.blit(label, label.get_rect(center=rect.center))
+    return is_hover
+
+
+def _draw_exit_button(screen, font, rect, text, mouse_pos):
+    """
+    🧠 ЛОГИКА:
+    Отдельная отрисовка кнопки "Выход", чтобы при наведении она краснела.
+    """
+    is_hover = rect.collidepoint(mouse_pos)
+
+    EXIT_BG = BUTTON_BG_COLOR                 # 🔧 МОЖНО МЕНЯТЬ: обычный фон
+    EXIT_HOVER_BG = (150, 45, 45)             # 🔧 МОЖНО МЕНЯТЬ: фон при наведении (красный)
+    EXIT_HOVER_BG_2 = (180, 55, 55)           # 🔧 МОЖНО МЕНЯТЬ: усиление, когда "сильно красный"
+
+    bg = EXIT_HOVER_BG_2 if is_hover else EXIT_BG
 
     pygame.draw.rect(screen, bg, rect)
     pygame.draw.rect(screen, BUTTON_BORDER_COLOR, rect, BUTTON_BORDER_WIDTH)
@@ -114,7 +170,6 @@ def _get_dir_size_bytes(folder: Path) -> int:
                 try:
                     total += os.path.getsize(fp)
                 except OSError:
-                    # файл может быть удалён/занят и т.п. — просто пропускаем
                     pass
     except Exception:
         return 0
@@ -251,14 +306,12 @@ def _restore_pygame_focus(timeout_sec: float = 1.5) -> None:
             _user32.SetFocus(hwnd)
 
         finally:
-            # ✅ ВАЖНО: всегда отсоединяем, иначе может быть “хаос” в вводе
             try:
                 if fg_thread is not None and this_thread is not None and fg_thread != this_thread:
                     _user32.AttachThreadInput(fg_thread, this_thread, False)
             except Exception:
                 pass
 
-    # ✅ ждём фокус
     t0 = time.perf_counter()
     while not pygame.key.get_focused():
         pygame.event.pump()
@@ -266,7 +319,6 @@ def _restore_pygame_focus(timeout_sec: float = 1.5) -> None:
             break
         pygame.time.delay(10)
 
-    # ✅ ждём отпускание ЛКМ (если UP потерялся)
     t1 = time.perf_counter()
     while pygame.mouse.get_pressed(num_buttons=3)[0]:
         pygame.event.pump()
@@ -300,13 +352,22 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         manager_y + font.get_height() + 10
     )
 
+    # ✅ Кнопка "Выход" — ВЕРХНИЙ ПРАВЫЙ УГОЛ (меньше стандартной)
+    EXIT_BTN_W = int(BUTTON_W * 0.72)  # 🔧 МОЖНО МЕНЯТЬ: ширина кнопки "Выход"
+    EXIT_BTN_H = int(BUTTON_H * 0.78)  # 🔧 МОЖНО МЕНЯТЬ: высота кнопки "Выход"
+    EXIT_BTN_MARGIN = 10               # 🔧 МОЖНО МЕНЯТЬ: отступ от краёв
+
+    EXIT_BTN_X = window_width - EXIT_BTN_W - EXIT_BTN_MARGIN
+    EXIT_BTN_Y = EXIT_BTN_MARGIN
+
+    btn_exit = pygame.Rect(EXIT_BTN_X, EXIT_BTN_Y, EXIT_BTN_W, EXIT_BTN_H)
+
     btn_create = pygame.Rect(UI_MARGIN_X, ui_buttons_y, BUTTON_W, BUTTON_H)
     btn_last_project = pygame.Rect(UI_MARGIN_X + BUTTON_W + UI_GAP_X, ui_buttons_y, BUTTON_W, BUTTON_H)
     btn_open_project = pygame.Rect(UI_MARGIN_X, ui_buttons_y + BUTTON_H + UI_GAP_X, BUTTON_W, BUTTON_H)
 
     selected_project_index: int | None = None
 
-    # ✅ данные выбранного проекта (для отображения пути и размера)
     selected_project_path_text: str = ""
     selected_project_size_text: str = ""
     selected_project_cached_root: Path | None = None
@@ -329,42 +390,28 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
     OPEN_PULSE_ADD = (30, 60, 90)    # 🔧 МОЖНО МЕНЯТЬ
 
     # ✅ компактные кнопки для выбранного проекта (в ряд)
-    SELECTED_BUTTON_GAP_X = 10        # 🔧 МОЖНО МЕНЯТЬ: расстояние между кнопками
-    SELECTED_BUTTON_MIN_W = 120       # 🔧 МОЖНО МЕНЯТЬ: минимальная ширина кнопки
-    SELECTED_BUTTON_MAX_W = 220       # 🔧 МОЖНО МЕНЯТЬ: максимальная ширина кнопки
-    SELECTED_BUTTON_H = 32            # 🔧 МОЖНО МЕНЯТЬ: высота кнопок для выбранного проекта (компакт)
+    SELECTED_BUTTON_GAP_X = 10        # 🔧 МОЖНО МЕНЯТЬ
+    SELECTED_BUTTON_MIN_W = 120       # 🔧 МОЖНО МЕНЯТЬ
+    SELECTED_BUTTON_MAX_W = 220       # 🔧 МОЖНО МЕНЯТЬ
+    SELECTED_BUTTON_H = 32            # 🔧 МОЖНО МЕНЯТЬ
 
-    # ✅ НОВОЕ (железобетон): настройка нижних отступов
-    BOTTOM_SAFE_PAD = 18   # 🔧 МОЖНО МЕНЯТЬ: нижний отступ от края окна
-    STATUS_GAP = 10        # 🔧 МОЖНО МЕНЯТЬ: расстояние между инфо-блоком и статусом
+    BOTTOM_SAFE_PAD = 18   # 🔧 МОЖНО МЕНЯТЬ
+    STATUS_GAP = 10        # 🔧 МОЖНО МЕНЯТЬ
 
     def _selected_buttons_panel_x() -> int:
-        """
-        🧠 ЛОГИКА: левая граница области справа от списка проектов.
-        """
         return UI_MARGIN_X + PROJECT_ITEM_W + UI_GAP_X
 
     def _selected_button_width() -> int:
-        """
-        🧠 ЛОГИКА:
-        Подбираем ширину 2-х кнопок так, чтобы они точно влезли в окно справа от списка.
-        """
         panel_x = _selected_buttons_panel_x()
-        available = window_width - panel_x - UI_MARGIN_X  # ✅ оставляем правый отступ
+        available = window_width - panel_x - UI_MARGIN_X
         w = int((available - SELECTED_BUTTON_GAP_X) / 2)
         w = max(SELECTED_BUTTON_MIN_W, min(SELECTED_BUTTON_MAX_W, w))
         return w
 
     def _selected_button_y_for_item(item_y: int) -> int:
-        """
-        🧠 ЛОГИКА: выравниваем компактные кнопки по центру строки проекта.
-        """
         return item_y + max(0, (PROJECT_ITEM_H - SELECTED_BUTTON_H) // 2)
 
     def _get_open_selected_button_rect(selected_index: int) -> pygame.Rect:
-        """
-        ✅ "Открыть" — СЛЕВА в паре.
-        """
         item_y = PROJECT_LIST_Y + selected_index * (PROJECT_ITEM_H + PROJECT_ITEM_GAP)
         y = _selected_button_y_for_item(item_y)
         w = _selected_button_width()
@@ -372,22 +419,14 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         return pygame.Rect(x, y, w, SELECTED_BUTTON_H)
 
     def _get_delete_button_rect(selected_index: int) -> pygame.Rect:
-        """
-        ✅ "Удалить" — СПРАВА в паре.
-        """
         open_rect = _get_open_selected_button_rect(selected_index)
         w = open_rect.width
         x = open_rect.x + w + SELECTED_BUTTON_GAP_X
         return pygame.Rect(x, open_rect.y, w, SELECTED_BUTTON_H)
 
-    # ✅ “armed” для UI-кнопок (action на mouse up)
     armed_action: str | None = None
 
     def _update_selected_project_info(info) -> None:
-        """
-        🧠 ЛОГИКА: обновляем текст "Путь/Размер" при выборе проекта.
-        Размер считаем 1 раз на выбор (кэш по root).
-        """
         nonlocal selected_project_path_text, selected_project_size_text, selected_project_cached_root
 
         root_path = info.root.resolve()
@@ -401,9 +440,6 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         selected_project_size_text = _format_bytes(size_bytes)
 
     def _clear_selected_project_info() -> None:
-        """
-        🧠 ЛОГИКА: сбрасываем тексты при снятии выделения.
-        """
         nonlocal selected_project_path_text, selected_project_size_text, selected_project_cached_root
         selected_project_path_text = ""
         selected_project_size_text = ""
@@ -468,9 +504,6 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                     running = False
 
     def _do_open_selected():
-        """
-        ✅ Открыть выделенный проект из списка (без file dialog)
-        """
         nonlocal status_message, running
         if selected_project_index is None:
             return
@@ -517,24 +550,38 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         else:
             status_message = "Удаление отменено."
 
+    def _confirm_exit() -> bool:
+        """
+        🧠 ЛОГИКА: единое подтверждение выхода (кнопка и крестик).
+        """
+        confirm_exit = messagebox.askyesno("Выход", "Вы действительно хотите выйти?")
+        _restore_pygame_focus()
+        return bool(confirm_exit)
+
     running = True
     while running:
         clock.tick(fps)
         mouse_pos = pygame.mouse.get_pos()
 
-        # ✅ Если ЛКМ уже не нажата, но UP потерялся — сбрасываем armed
         if not pygame.mouse.get_pressed(num_buttons=3)[0]:
             armed_action = None
 
         all_projects = list_all_projects()
 
         for event in pygame.event.get():
+            # ✅ КРЕСТИК ОКНА -> подтверждение -> жёсткий выход
             if event.type == pygame.QUIT:
-                running = False
+                if _confirm_exit():
+                    force_quit(0)
+                else:
+                    continue
 
-            # ✅ Заводим кнопку на DOWN
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 pos = event.pos
+
+                if btn_exit.collidepoint(pos):
+                    armed_action = "exit"
+                    continue
 
                 if btn_create.collidepoint(pos):
                     armed_action = "create"
@@ -546,7 +593,6 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                     armed_action = "open"
                     continue
 
-                # ✅ Кнопки для выделенного проекта: (Открыть слева) + (Удалить справа)
                 if selected_project_index is not None and 0 <= selected_project_index < len(all_projects):
                     open_sel_rect = _get_open_selected_button_rect(selected_project_index)
                     if open_sel_rect.collidepoint(pos):
@@ -558,7 +604,6 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                         armed_action = "delete"
                         continue
 
-                # --- список проектов: выделение + double click ---
                 clicked_index: int | None = None
                 y = PROJECT_LIST_Y
                 for i, p in enumerate(all_projects):
@@ -571,7 +616,6 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                 if clicked_index is not None:
                     selected_project_index = clicked_index
 
-                    # ✅ обновить путь/размер для выбранного проекта
                     try:
                         info_for_selected = all_projects[clicked_index]
                         _update_selected_project_info(info_for_selected)
@@ -595,17 +639,19 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                             run_scene_editor(info.start_scene, window_width, window_height, fps)
                             running = False
                 else:
-                    # ✅ клик в пустое место -> снимаем выделение
                     selected_project_index = None
                     last_click_index = None
                     last_click_time = 0
                     _clear_selected_project_info()
 
-            # ✅ Выполняем действие на UP
             if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 pos = event.pos
 
-                if armed_action == "create" and btn_create.collidepoint(pos):
+                if armed_action == "exit" and btn_exit.collidepoint(pos):
+                    if _confirm_exit():
+                        force_quit(0)
+
+                elif armed_action == "create" and btn_create.collidepoint(pos):
                     _do_create()
                 elif armed_action == "last" and btn_last_project.collidepoint(pos):
                     _do_last()
@@ -626,6 +672,9 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
 
         # --- РЕНДЕР ---
         screen.fill(EDITOR_BG_COLOR)
+
+        # ✅ Кнопка "Выход" — рисуем первой + краснеет при наведении
+        _draw_exit_button(screen, font, btn_exit, "Выход", mouse_pos)
 
         title_w = title_font.size(title_text)[0]
         title_x = (window_width - title_w) // 2
@@ -702,19 +751,17 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         # ============================================================
         # ✅ ЖЕЛЕЗОБЕТОН: адаптивные Y снизу, чтобы ничего не перекрывалось
         # ============================================================
-        line_h = font.get_height() + 6  # соответствует _draw_lines()
+        line_h = font.get_height() + 6
         info_lines_count = 0
 
         if selected_project_index is not None and selected_project_path_text:
-            info_lines_count = 3  # "Выбранный проект", "Путь", "Размер"
+            info_lines_count = 3
 
         status_lines_count = 1 if status_message else 0
 
-        # Снизу вверх: сначала статус, выше него инфо-блок
         status_y = window_height - BOTTOM_SAFE_PAD - (status_lines_count * line_h)
         info_y = status_y - (STATUS_GAP + (info_lines_count * line_h))
 
-        # ✅ инфо о выбранном проекте
         if info_lines_count > 0:
             info_lines = [
                 "Выбранный проект:",
@@ -723,7 +770,6 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
             ]
             _draw_lines(screen, font, info_lines, x=UI_MARGIN_X, y=info_y, color=EDITOR_HINT_COLOR)
 
-        # ✅ статус-сообщение (всегда ниже)
         if status_message:
             _draw_lines(screen, font, [status_message], x=UI_MARGIN_X, y=status_y, color=EDITOR_HINT_COLOR)
 

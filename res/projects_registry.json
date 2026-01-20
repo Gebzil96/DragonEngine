@@ -1,0 +1,14 @@
+{
+  "projects": [
+    {
+      "name": "wqqewq",
+      "root": "C:\\Users\\Boris\\Desktop\\TS4",
+      "start_scene": "scenes\\start.scene.json"
+    },
+    {
+      "name": "gfhfhfgr",
+      "root": "C:\\Users\\Boris\\Desktop\\TS4\\gfhfhfgr",
+      "start_scene": "scenes/main.scene.json"
+    }
+  ]
+}
