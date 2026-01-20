@@ -129,7 +129,6 @@ def _draw_exit_button(screen, font, rect, text, mouse_pos):
     is_hover = rect.collidepoint(mouse_pos)
 
     EXIT_BG = BUTTON_BG_COLOR                 # 🔧 МОЖНО МЕНЯТЬ: обычный фон
-    EXIT_HOVER_BG = (150, 45, 45)             # 🔧 МОЖНО МЕНЯТЬ: фон при наведении (красный)
     EXIT_HOVER_BG_2 = (180, 55, 55)           # 🔧 МОЖНО МЕНЯТЬ: усиление, когда "сильно красный"
 
     bg = EXIT_HOVER_BG_2 if is_hover else EXIT_BG
