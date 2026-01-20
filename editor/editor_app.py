@@ -6,6 +6,7 @@ from pathlib import Path
 import json
 import math
 import time
+import os  # ✅ НОВОЕ: для подсчёта размера папки
 
 # ✅ WinAPI для принудительного возврата фокуса (Windows)
 import ctypes
@@ -94,6 +95,50 @@ def _blend_color(base_rgb: tuple[int, int, int], add_rgb: tuple[int, int, int], 
     g = _clamp_int(base_rgb[1] + add_rgb[1] * t, 0, 255)
     b = _clamp_int(base_rgb[2] + add_rgb[2] * t, 0, 255)
     return (r, g, b)
+
+
+# ============================================================
+# ✅ размер папки проекта (в байтах) + красивый формат
+# ============================================================
+
+def _get_dir_size_bytes(folder: Path) -> int:
+    """
+    🧠 ЛОГИКА: суммируем размеры всех файлов в папке (рекурсивно).
+    ⚠️ Может быть тяжёлым на огромных папках, поэтому считаем ТОЛЬКО при выборе проекта.
+    """
+    total = 0
+    try:
+        for root_dir, _, files in os.walk(folder):
+            for fn in files:
+                fp = os.path.join(root_dir, fn)
+                try:
+                    total += os.path.getsize(fp)
+                except OSError:
+                    # файл может быть удалён/занят и т.п. — просто пропускаем
+                    pass
+    except Exception:
+        return 0
+    return total
+
+
+def _format_bytes(num: int) -> str:
+    """
+    🧠 ЛОГИКА: человекочитаемый размер (B/KB/MB/GB).
+    """
+    if num < 0:
+        num = 0
+
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(num)
+    i = 0
+    while size >= 1024.0 and i < len(units) - 1:
+        size /= 1024.0
+        i += 1
+
+    # 🔧 МОЖНО МЕНЯТЬ: количество знаков после запятой
+    if i == 0:
+        return f"{int(size)} {units[i]}"
+    return f"{size:.2f} {units[i]}"
 
 
 def check_scene_file(scene_path: Path) -> bool:
@@ -261,6 +306,11 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
 
     selected_project_index: int | None = None
 
+    # ✅ данные выбранного проекта (для отображения пути и размера)
+    selected_project_path_text: str = ""
+    selected_project_size_text: str = ""
+    selected_project_cached_root: Path | None = None
+
     last_click_time = 0
     last_click_index: int | None = None
     DOUBLE_CLICK_MS = 350  # 🔧 МОЖНО МЕНЯТЬ
@@ -271,20 +321,93 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
     PROJECT_ITEM_H = 36           # 🔧 МОЖНО МЕНЯТЬ
     PROJECT_ITEM_GAP = 8          # 🔧 МОЖНО МЕНЯТЬ
 
+    # ✅ Пульсация кнопок
     DELETE_PULSE_SPEED = 3.2         # 🔧 МОЖНО МЕНЯТЬ
     DELETE_PULSE_ADD = (90, 30, 30)  # 🔧 МОЖНО МЕНЯТЬ
 
-    def _get_delete_button_rect(selected_index: int) -> pygame.Rect:
-        y = PROJECT_LIST_Y + selected_index * (PROJECT_ITEM_H + PROJECT_ITEM_GAP)
-        return pygame.Rect(
-            UI_MARGIN_X + PROJECT_ITEM_W + UI_GAP_X,
-            y,
-            BUTTON_W,
-            BUTTON_H,
-        )
+    OPEN_PULSE_SPEED = 2.6           # 🔧 МОЖНО МЕНЯТЬ
+    OPEN_PULSE_ADD = (30, 60, 90)    # 🔧 МОЖНО МЕНЯТЬ
 
-    # ✅ КЛЮЧЕВОЕ: “armed” для UI-кнопок (action на mouse up)
+    # ✅ компактные кнопки для выбранного проекта (в ряд)
+    SELECTED_BUTTON_GAP_X = 10        # 🔧 МОЖНО МЕНЯТЬ: расстояние между кнопками
+    SELECTED_BUTTON_MIN_W = 120       # 🔧 МОЖНО МЕНЯТЬ: минимальная ширина кнопки
+    SELECTED_BUTTON_MAX_W = 220       # 🔧 МОЖНО МЕНЯТЬ: максимальная ширина кнопки
+    SELECTED_BUTTON_H = 32            # 🔧 МОЖНО МЕНЯТЬ: высота кнопок для выбранного проекта (компакт)
+
+    # ✅ НОВОЕ (железобетон): настройка нижних отступов
+    BOTTOM_SAFE_PAD = 18   # 🔧 МОЖНО МЕНЯТЬ: нижний отступ от края окна
+    STATUS_GAP = 10        # 🔧 МОЖНО МЕНЯТЬ: расстояние между инфо-блоком и статусом
+
+    def _selected_buttons_panel_x() -> int:
+        """
+        🧠 ЛОГИКА: левая граница области справа от списка проектов.
+        """
+        return UI_MARGIN_X + PROJECT_ITEM_W + UI_GAP_X
+
+    def _selected_button_width() -> int:
+        """
+        🧠 ЛОГИКА:
+        Подбираем ширину 2-х кнопок так, чтобы они точно влезли в окно справа от списка.
+        """
+        panel_x = _selected_buttons_panel_x()
+        available = window_width - panel_x - UI_MARGIN_X  # ✅ оставляем правый отступ
+        w = int((available - SELECTED_BUTTON_GAP_X) / 2)
+        w = max(SELECTED_BUTTON_MIN_W, min(SELECTED_BUTTON_MAX_W, w))
+        return w
+
+    def _selected_button_y_for_item(item_y: int) -> int:
+        """
+        🧠 ЛОГИКА: выравниваем компактные кнопки по центру строки проекта.
+        """
+        return item_y + max(0, (PROJECT_ITEM_H - SELECTED_BUTTON_H) // 2)
+
+    def _get_open_selected_button_rect(selected_index: int) -> pygame.Rect:
+        """
+        ✅ "Открыть" — СЛЕВА в паре.
+        """
+        item_y = PROJECT_LIST_Y + selected_index * (PROJECT_ITEM_H + PROJECT_ITEM_GAP)
+        y = _selected_button_y_for_item(item_y)
+        w = _selected_button_width()
+        x = _selected_buttons_panel_x()
+        return pygame.Rect(x, y, w, SELECTED_BUTTON_H)
+
+    def _get_delete_button_rect(selected_index: int) -> pygame.Rect:
+        """
+        ✅ "Удалить" — СПРАВА в паре.
+        """
+        open_rect = _get_open_selected_button_rect(selected_index)
+        w = open_rect.width
+        x = open_rect.x + w + SELECTED_BUTTON_GAP_X
+        return pygame.Rect(x, open_rect.y, w, SELECTED_BUTTON_H)
+
+    # ✅ “armed” для UI-кнопок (action на mouse up)
     armed_action: str | None = None
+
+    def _update_selected_project_info(info) -> None:
+        """
+        🧠 ЛОГИКА: обновляем текст "Путь/Размер" при выборе проекта.
+        Размер считаем 1 раз на выбор (кэш по root).
+        """
+        nonlocal selected_project_path_text, selected_project_size_text, selected_project_cached_root
+
+        root_path = info.root.resolve()
+        if selected_project_cached_root == root_path:
+            return
+
+        selected_project_cached_root = root_path
+        selected_project_path_text = str(root_path)
+
+        size_bytes = _get_dir_size_bytes(root_path)
+        selected_project_size_text = _format_bytes(size_bytes)
+
+    def _clear_selected_project_info() -> None:
+        """
+        🧠 ЛОГИКА: сбрасываем тексты при снятии выделения.
+        """
+        nonlocal selected_project_path_text, selected_project_size_text, selected_project_cached_root
+        selected_project_path_text = ""
+        selected_project_size_text = ""
+        selected_project_cached_root = None
 
     def _do_create():
         nonlocal status_message, running
@@ -344,15 +467,37 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                     run_scene_editor(info.start_scene, window_width, window_height, fps)
                     running = False
 
+    def _do_open_selected():
+        """
+        ✅ Открыть выделенный проект из списка (без file dialog)
+        """
+        nonlocal status_message, running
+        if selected_project_index is None:
+            return
+
+        all_projects_local = list_all_projects()
+        if not (0 <= selected_project_index < len(all_projects_local)):
+            return
+
+        info = all_projects_local[selected_project_index]
+        status_message = f"Открываем: {info.name}"
+
+        register_project(info.root)
+        save_last_project(info.root)
+
+        if check_scene_file(info.start_scene):
+            run_scene_editor(info.start_scene, window_width, window_height, fps)
+            running = False
+
     def _do_delete():
         nonlocal status_message, selected_project_index, last_click_index, last_click_time
         if selected_project_index is None:
             return
-        all_projects = list_all_projects()
-        if not (0 <= selected_project_index < len(all_projects)):
+        all_projects_local = list_all_projects()
+        if not (0 <= selected_project_index < len(all_projects_local)):
             return
 
-        info = all_projects[selected_project_index]
+        info = all_projects_local[selected_project_index]
         confirm = messagebox.askyesno(
             "Удаление проекта",
             f"Удалить проект '{info.name}'?\n\nПапка будет удалена полностью:\n{info.root}"
@@ -366,6 +511,7 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                 selected_project_index = None
                 last_click_index = None
                 last_click_time = 0
+                _clear_selected_project_info()
             else:
                 status_message = "Ошибка: проект не найден для удаления."
         else:
@@ -400,13 +546,19 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                     armed_action = "open"
                     continue
 
+                # ✅ Кнопки для выделенного проекта: (Открыть слева) + (Удалить справа)
                 if selected_project_index is not None and 0 <= selected_project_index < len(all_projects):
+                    open_sel_rect = _get_open_selected_button_rect(selected_project_index)
+                    if open_sel_rect.collidepoint(pos):
+                        armed_action = "open_selected"
+                        continue
+
                     delete_rect = _get_delete_button_rect(selected_project_index)
                     if delete_rect.collidepoint(pos):
                         armed_action = "delete"
                         continue
 
-                # --- список проектов: выделение + double click (можно на DOWN) ---
+                # --- список проектов: выделение + double click ---
                 clicked_index: int | None = None
                 y = PROJECT_LIST_Y
                 for i, p in enumerate(all_projects):
@@ -418,6 +570,13 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
 
                 if clicked_index is not None:
                     selected_project_index = clicked_index
+
+                    # ✅ обновить путь/размер для выбранного проекта
+                    try:
+                        info_for_selected = all_projects[clicked_index]
+                        _update_selected_project_info(info_for_selected)
+                    except Exception:
+                        _clear_selected_project_info()
 
                     now_ms = pygame.time.get_ticks()
                     is_double_click = (
@@ -435,6 +594,12 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                         if check_scene_file(info.start_scene):
                             run_scene_editor(info.start_scene, window_width, window_height, fps)
                             running = False
+                else:
+                    # ✅ клик в пустое место -> снимаем выделение
+                    selected_project_index = None
+                    last_click_index = None
+                    last_click_time = 0
+                    _clear_selected_project_info()
 
             # ✅ Выполняем действие на UP
             if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
@@ -446,6 +611,11 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                     _do_last()
                 elif armed_action == "open" and btn_open_project.collidepoint(pos):
                     _do_open()
+                elif armed_action == "open_selected":
+                    if selected_project_index is not None and 0 <= selected_project_index < len(all_projects):
+                        open_sel_rect = _get_open_selected_button_rect(selected_project_index)
+                        if open_sel_rect.collidepoint(pos):
+                            _do_open_selected()
                 elif armed_action == "delete":
                     if selected_project_index is not None and 0 <= selected_project_index < len(all_projects):
                         delete_rect = _get_delete_button_rect(selected_project_index)
@@ -496,26 +666,66 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         else:
             _draw_lines(screen, font, ["(пока пусто)"], x=PROJECT_LIST_X, y=PROJECT_LIST_Y, color=EDITOR_TEXT_COLOR)
 
+        # ✅ Кнопки для выделенного проекта: "Открыть" (слева) + "Удалить" (справа)
         if selected_project_index is not None and 0 <= selected_project_index < len(all_projects):
+            open_sel_rect = _get_open_selected_button_rect(selected_project_index)
             delete_rect = _get_delete_button_rect(selected_project_index)
 
             t = pygame.time.get_ticks() / 1000.0
-            pulse = (math.sin(t * DELETE_PULSE_SPEED) + 1.0) * 0.5
 
-            base_bg = BUTTON_BG_COLOR
-            pulse_bg = _blend_color(base_bg, DELETE_PULSE_ADD, pulse)
+            # --- Открыть (слева) ---
+            pulse_open = (math.sin(t * OPEN_PULSE_SPEED) + 1.0) * 0.5
+            open_bg = _blend_color(BUTTON_BG_COLOR, OPEN_PULSE_ADD, pulse_open)
+
+            if open_sel_rect.collidepoint(mouse_pos):
+                open_bg = _blend_color(open_bg, (20, 30, 40), 1.0)  # 🔧 МОЖНО МЕНЯТЬ
+
+            pygame.draw.rect(screen, open_bg, open_sel_rect)
+            pygame.draw.rect(screen, BUTTON_BORDER_COLOR, open_sel_rect, BUTTON_BORDER_WIDTH)
+
+            label_open = font.render("Открыть", True, BUTTON_TEXT_COLOR)  # 🔧 МОЖНО МЕНЯТЬ
+            screen.blit(label_open, label_open.get_rect(center=open_sel_rect.center))
+
+            # --- Удалить (справа) ---
+            pulse_del = (math.sin(t * DELETE_PULSE_SPEED) + 1.0) * 0.5
+            del_bg = _blend_color(BUTTON_BG_COLOR, DELETE_PULSE_ADD, pulse_del)
 
             if delete_rect.collidepoint(mouse_pos):
-                pulse_bg = _blend_color(pulse_bg, (50, 20, 20), 1.0)  # 🔧 МОЖНО МЕНЯТЬ
+                del_bg = _blend_color(del_bg, (50, 20, 20), 1.0)  # 🔧 МОЖНО МЕНЯТЬ
 
-            pygame.draw.rect(screen, pulse_bg, delete_rect)
+            pygame.draw.rect(screen, del_bg, delete_rect)
             pygame.draw.rect(screen, BUTTON_BORDER_COLOR, delete_rect, BUTTON_BORDER_WIDTH)
 
-            label = font.render("Удалить проект", True, BUTTON_TEXT_COLOR)
-            screen.blit(label, label.get_rect(center=delete_rect.center))
+            label_del = font.render("Удалить", True, BUTTON_TEXT_COLOR)  # 🔧 МОЖНО МЕНЯТЬ
+            screen.blit(label_del, label_del.get_rect(center=delete_rect.center))
 
+        # ============================================================
+        # ✅ ЖЕЛЕЗОБЕТОН: адаптивные Y снизу, чтобы ничего не перекрывалось
+        # ============================================================
+        line_h = font.get_height() + 6  # соответствует _draw_lines()
+        info_lines_count = 0
+
+        if selected_project_index is not None and selected_project_path_text:
+            info_lines_count = 3  # "Выбранный проект", "Путь", "Размер"
+
+        status_lines_count = 1 if status_message else 0
+
+        # Снизу вверх: сначала статус, выше него инфо-блок
+        status_y = window_height - BOTTOM_SAFE_PAD - (status_lines_count * line_h)
+        info_y = status_y - (STATUS_GAP + (info_lines_count * line_h))
+
+        # ✅ инфо о выбранном проекте
+        if info_lines_count > 0:
+            info_lines = [
+                "Выбранный проект:",
+                f"Путь: {selected_project_path_text}",
+                f"Размер: {selected_project_size_text}",
+            ]
+            _draw_lines(screen, font, info_lines, x=UI_MARGIN_X, y=info_y, color=EDITOR_HINT_COLOR)
+
+        # ✅ статус-сообщение (всегда ниже)
         if status_message:
-            _draw_lines(screen, font, [status_message], x=UI_MARGIN_X, y=550, color=EDITOR_HINT_COLOR)
+            _draw_lines(screen, font, [status_message], x=UI_MARGIN_X, y=status_y, color=EDITOR_HINT_COLOR)
 
         pygame.display.flip()
 
