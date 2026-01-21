@@ -48,6 +48,8 @@ from project_manager import (
 
 from editor.scene_editor import run_scene_editor
 
+from engine_settings import load_settings, save_settings  # ✅ НОВОЕ: глобальные настройки
+
 
 # 🧠 ЛОГИКА: tkinter нужен только для диалогов
 root = tk.Tk()
@@ -331,9 +333,40 @@ def _restore_pygame_focus(timeout_sec: float = 1.5) -> None:
 # ============================================================
 # ✅ ВНУТРЕННЯЯ РЕАЛИЗАЦИЯ
 # ============================================================
-def _run_editor_impl(window_width: int, window_height: int, window_title: str, fps: int, projects_dir: Path):
+def _run_editor_impl(
+    window_width: int,
+    window_height: int,
+    window_title: str,
+    fps: int,
+    projects_dir: Path,
+    fullscreen: bool = False,
+):
     pygame.init()
-    screen = pygame.display.set_mode((window_width, window_height))
+
+    # ============================================================
+    # ✅ ДИСПЛЕЙ-РЕЖИМ (окно / fullscreen)
+    # ============================================================
+    def _apply_display_mode(fullscreen_on: bool):
+        """🧠 ЛОГИКА:
+        В pygame fullscreen переключается ТОЛЬКО через пересоздание окна (set_mode).
+        Возвращаем (screen, actual_w, actual_h).
+        """
+        flags_local = pygame.FULLSCREEN if fullscreen_on else 0
+
+        # 🔧 МОЖНО МЕНЯТЬ: включать RESIZABLE в оконном режиме (если захочешь)
+        WINDOW_RESIZABLE = False
+
+        if not fullscreen_on and WINDOW_RESIZABLE:
+            flags_local |= pygame.RESIZABLE
+
+        local_screen = pygame.display.set_mode(
+            (0, 0) if fullscreen_on else (window_width, window_height),
+            flags_local,
+        )
+        w, h = local_screen.get_size()
+        return local_screen, w, h
+
+    screen, win_w, win_h = _apply_display_mode(bool(fullscreen))
     pygame.display.set_caption(window_title)
     clock = pygame.time.Clock()
 
@@ -352,14 +385,48 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
     EXIT_BTN_H = int(BUTTON_H * 0.78)  # 🔧 МОЖНО МЕНЯТЬ: высота кнопки "Выход"
     EXIT_BTN_MARGIN = 10  # 🔧 МОЖНО МЕНЯТЬ: отступ от краёв
 
-    EXIT_BTN_X = window_width - EXIT_BTN_W - EXIT_BTN_MARGIN
+    EXIT_BTN_X = win_w - EXIT_BTN_W - EXIT_BTN_MARGIN
     EXIT_BTN_Y = EXIT_BTN_MARGIN
-
     btn_exit = pygame.Rect(EXIT_BTN_X, EXIT_BTN_Y, EXIT_BTN_W, EXIT_BTN_H)
 
+    # ✅ Настройки движка (persisted)
+    engine_settings = load_settings()
+    engine_settings["fullscreen"] = bool(fullscreen)
+    settings_open = False
+
+    def _update_exit_button() -> None:
+        """🧠 ЛОГИКА: пересчитываем позицию кнопки выхода (правый верх)."""
+        nonlocal EXIT_BTN_X, EXIT_BTN_Y
+        EXIT_BTN_X = win_w - EXIT_BTN_W - EXIT_BTN_MARGIN
+        EXIT_BTN_Y = EXIT_BTN_MARGIN
+        btn_exit.x = EXIT_BTN_X
+        btn_exit.y = EXIT_BTN_Y
+
+        # ✅ ВАЖНО: держим "Настройки" на одном уровне с "Выход" по Y
+        btn_settings.y = EXIT_BTN_Y
+
+    # ============================================================
+    # ✅ КНОПКИ МЕНЕДЖЕРА ПРОЕКТОВ
+    # ============================================================
     btn_create = pygame.Rect(UI_MARGIN_X, ui_buttons_y, BUTTON_W, BUTTON_H)
     btn_last_project = pygame.Rect(UI_MARGIN_X + BUTTON_W + UI_GAP_X, ui_buttons_y, BUTTON_W, BUTTON_H)
+
+    # ✅ "Открыть проект" — второй ряд
     btn_open_project = pygame.Rect(UI_MARGIN_X, ui_buttons_y + BUTTON_H + UI_GAP_X, BUTTON_W, BUTTON_H)
+
+    # ============================================================
+    # ✅ Кнопка "Настройки": X как у "Создать"/"Открыть"
+    # + Уже как "Выход"
+    # + Y = как у "Выход"
+    # ============================================================
+    SETTINGS_BTN_W = int(BUTTON_W * 0.72)  # 🔧 МОЖНО МЕНЯТЬ: ширина (как у кнопки "Выход")
+    SETTINGS_BTN_H = int(BUTTON_H * 0.78)  # 🔧 МОЖНО МЕНЯТЬ: высота (как у кнопки "Выход")
+    SETTINGS_BTN_X = UI_MARGIN_X  # ✅ слева, вровень с "Создать"/"Открыть"
+
+    # ✅ сразу ставим на один уровень с "Выход"
+    SETTINGS_BTN_Y = EXIT_BTN_Y  # ✅ ключевая правка
+
+    btn_settings = pygame.Rect(SETTINGS_BTN_X, SETTINGS_BTN_Y, SETTINGS_BTN_W, SETTINGS_BTN_H)
 
     selected_project_index: int | None = None
 
@@ -398,7 +465,7 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
 
     def _selected_button_width() -> int:
         panel_x = _selected_buttons_panel_x()
-        available = window_width - panel_x - UI_MARGIN_X
+        available = win_w - panel_x - UI_MARGIN_X
         w = int((available - SELECTED_BUTTON_GAP_X) / 2)
         w = max(SELECTED_BUTTON_MIN_W, min(SELECTED_BUTTON_MAX_W, w))
         return w
@@ -452,9 +519,9 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         - "quit" -> пользователь закрыл окно сцены крестиком (закрываем весь движок)
         - "back" -> пользователь нажал "К проектам" (возвращаемся в менеджер)
         """
-        nonlocal screen, status_message
+        nonlocal screen, status_message, win_w, win_h, fullscreen
 
-        result = run_scene_editor(scene_path, window_width, window_height, fps)
+        result = run_scene_editor(scene_path, win_w, win_h, fps)
 
         if result == "quit":
             force_quit(0)
@@ -462,8 +529,9 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         # ✅ FIX: возвращаем заголовок окна менеджера
         pygame.display.set_caption(window_title)
 
-        # ✅ FIX: возвращаем режим окна менеджера (на будущее — если сцена меняла set_mode)
-        screen = pygame.display.set_mode((window_width, window_height))
+        # ✅ FIX: возвращаем режим окна менеджера (fullscreen/окно)
+        screen, win_w, win_h = _apply_display_mode(bool(engine_settings.get("fullscreen", False)))
+        _update_exit_button()
 
         # ✅ очищаем хвост событий (клики/клавиши из сцены не должны "протекать" в менеджер)
         pygame.event.clear()
@@ -580,10 +648,30 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         _restore_pygame_focus()
         return bool(confirm_exit)
 
+    # ============================================================
+    # ✅ UI: вычисление rect панели настроек (единое место)
+    # ============================================================
+    def _settings_panel_rect() -> pygame.Rect:
+        # 🔧 МОЖНО МЕНЯТЬ: размеры и позиция панели
+        PANEL_W = 280
+        PANEL_H = 96
+        PANEL_MARGIN_Y = 6
+
+        panel_x = btn_settings.x
+        panel_y = btn_settings.bottom + PANEL_MARGIN_Y
+        return pygame.Rect(panel_x, panel_y, PANEL_W, PANEL_H)
+
+    def _settings_checkbox_fullscreen_rect(panel_rect: pygame.Rect) -> pygame.Rect:
+        return pygame.Rect(panel_rect.x + 12, panel_rect.y + 44, 20, 20)
+
     running = True
     while running:
         clock.tick(fps)
         mouse_pos = pygame.mouse.get_pos()
+
+        # ✅ актуальный размер окна (важно для fullscreen / будущего RESIZABLE)
+        win_w, win_h = screen.get_size()
+        _update_exit_button()
 
         if not pygame.mouse.get_pressed(num_buttons=3)[0]:
             armed_action = None
@@ -603,6 +691,19 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
 
                 if btn_exit.collidepoint(pos):
                     armed_action = "exit"
+                    continue
+
+                if btn_settings.collidepoint(pos):
+                    armed_action = "settings"
+                    continue
+
+                # ✅ если меню настроек открыто — клики по UI под ним не должны "протекать"
+                if settings_open:
+                    panel_rect = _settings_panel_rect()
+                    if panel_rect.collidepoint(pos):
+                        armed_action = "settings_panel"
+                    else:
+                        armed_action = "settings_outside"
                     continue
 
                 if btn_create.collidepoint(pos):
@@ -669,6 +770,32 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                     if _confirm_exit():
                         force_quit(0)
 
+                elif armed_action == "settings" and btn_settings.collidepoint(pos):
+                    settings_open = not settings_open
+
+                # ✅ меню открыто: клики обрабатываем ТОЛЬКО в меню
+                elif settings_open:
+                    panel_rect = _settings_panel_rect()
+                    checkbox_rect = _settings_checkbox_fullscreen_rect(panel_rect)
+
+                    # клик по чекбоксу
+                    if checkbox_rect.collidepoint(pos):
+                        engine_settings["fullscreen"] = not bool(engine_settings.get("fullscreen", False))
+                        save_settings(engine_settings)
+
+                        fullscreen = bool(engine_settings["fullscreen"])
+
+                        # ✅ Пере-применяем режим окна
+                        screen, win_w, win_h = _apply_display_mode(fullscreen)
+                        _update_exit_button()
+
+                        pygame.display.set_caption(window_title)
+                        pygame.event.clear()
+
+                    # клик вне меню — закрываем меню (приятный UX)
+                    elif not panel_rect.collidepoint(pos) and not btn_settings.collidepoint(pos):
+                        settings_open = False
+
                 elif armed_action == "create" and btn_create.collidepoint(pos):
                     _do_create()
                 elif armed_action == "last" and btn_last_project.collidepoint(pos):
@@ -691,20 +818,24 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         # --- РЕНДЕР ---
         screen.fill(EDITOR_BG_COLOR)
 
-        # ✅ Кнопка "Выход" — рисуем первой + краснеет при наведении
+        # ✅ Верхний правый: "Выход"
         _draw_exit_button(screen, font, btn_exit, "Выход", mouse_pos)
 
+        # ✅ Верхний левый: "Настройки" (на одном уровне с "Выход" по Y)
+        _draw_button(screen, font, btn_settings, "Настройки", mouse_pos)
+
         title_w = title_font.size(title_text)[0]
-        title_x = (window_width - title_w) // 2
+        title_x = (win_w - title_w) // 2
         screen.blit(title_font.render(title_text, True, EDITOR_TEXT_COLOR), (title_x, TITLE_Y))
 
         screen.blit(font.render("Менеджер проектов:", True, EDITOR_TEXT_COLOR), (UI_MARGIN_X, manager_y))
 
+        # ✅ Кнопки менеджера
         _draw_button(screen, font, btn_create, "Создать проект", mouse_pos)
         _draw_button(screen, font, btn_last_project, "Последний проект", mouse_pos)
         _draw_button(screen, font, btn_open_project, "Открыть проект", mouse_pos)
 
-        screen.blit(font.render("Проекты:", True, EDITOR_TEXT_COLOR), (PROJECT_LIST_X, PROJECT_LIST_Y - 30))
+        screen.blit(font.render("Проекты:", True, EDITOR_TEXT_COLOR), (UI_MARGIN_X, PROJECT_LIST_Y - 30))
 
         y = PROJECT_LIST_Y
         if all_projects:
@@ -758,7 +889,7 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
             screen.blit(label_del, label_del.get_rect(center=delete_rect.center))
 
         # ============================================================
-        # ✅ ЖЕЛЕЗОБЕТОН: адаптивные Y снизу, чтобы ничего не перекрывалось
+        # ✅ НИЖНИЕ СТРОКИ (путь/размер + статус)
         # ============================================================
         line_h = font.get_height() + 6
         info_lines_count = 0
@@ -768,8 +899,8 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
 
         status_lines_count = 1 if status_message else 0
 
-        status_y = window_height - BOTTOM_SAFE_PAD - (status_lines_count * line_h)
-        info_y = status_y - (STATUS_GAP + (info_lines_count * line_h))
+        status_y = win_h - 18 - (status_lines_count * line_h)  # 🔧 МОЖНО МЕНЯТЬ
+        info_y = status_y - (10 + (info_lines_count * line_h))  # 🔧 МОЖНО МЕНЯТЬ
 
         if info_lines_count > 0:
             info_lines = [
@@ -781,6 +912,31 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
 
         if status_message:
             _draw_lines(screen, font, [status_message], x=UI_MARGIN_X, y=status_y, color=EDITOR_HINT_COLOR)
+
+        # ============================================================
+        # ✅ ВАЖНО: РИСУЕМ МЕНЮ НАСТРОЕК САМЫМ ПОСЛЕДНИМ СЛОЕМ
+        # (чтобы оно было поверх любых элементов интерфейса)
+        # ============================================================
+        if settings_open:
+            panel_rect = _settings_panel_rect()
+            checkbox_rect = _settings_checkbox_fullscreen_rect(panel_rect)
+
+            pygame.draw.rect(screen, (32, 32, 42), panel_rect)  # 🔧 МОЖНО МЕНЯТЬ
+            pygame.draw.rect(screen, BUTTON_BORDER_COLOR, panel_rect, 2)
+
+            screen.blit(
+                font.render("Настройки", True, EDITOR_TEXT_COLOR),
+                (panel_rect.x + 12, panel_rect.y + 10),
+            )
+
+            pygame.draw.rect(screen, (50, 50, 70), checkbox_rect, 2)  # 🔧 МОЖНО МЕНЯТЬ
+
+            if engine_settings.get("fullscreen", False):
+                pygame.draw.line(screen, (120, 220, 120), checkbox_rect.topleft, checkbox_rect.bottomright, 3)
+                pygame.draw.line(screen, (120, 220, 120), checkbox_rect.topright, checkbox_rect.bottomleft, 3)
+
+            label = font.render("Полноэкранный режим", True, EDITOR_TEXT_COLOR)
+            screen.blit(label, (checkbox_rect.right + 10, checkbox_rect.y - 2))
 
         pygame.display.flip()
 
@@ -806,6 +962,7 @@ def run_editor(*args, **kwargs):
     window_title = _pick(kwargs, "window_title", "title", "caption", "WINDOW_TITLE")
     fps = _pick(kwargs, "fps", "FPS", "target_fps")
     projects_dir = _pick(kwargs, "projects_dir", "projects_path", "PROJECTS_DIR")
+    fullscreen = _pick(kwargs, "fullscreen", "FULLSCREEN")
 
     try:
         from config_engine import WINDOW_WIDTH as _DW, WINDOW_HEIGHT as _DH, FPS as _DFPS
@@ -818,6 +975,8 @@ def run_editor(*args, **kwargs):
         window_height = _DH
     if fps is None:
         fps = _DFPS
+    if fullscreen is None:
+        fullscreen = False
     if window_title is None:
         window_title = "DragonEngine"
     if projects_dir is None:
@@ -832,4 +991,5 @@ def run_editor(*args, **kwargs):
         window_title=str(window_title),
         fps=int(fps),
         projects_dir=projects_dir,
+        fullscreen=bool(fullscreen),
     )

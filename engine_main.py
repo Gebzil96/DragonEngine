@@ -119,15 +119,21 @@ def main():
         PROJECTS_DIR,
     )
 
+    from engine.engine_settings import load_settings  # ✅ НОВОЕ: глобальные настройки
+
     from editor.editor_app import run_editor  # 🧠 ЛОГИКА: запуск редактора
 
-    # ✅ 4) Запуск редактора
+    # ✅ 4) Загружаем настройки
+    settings = load_settings()
+
+    # ✅ 5) Запуск редактора
     run_editor(
         window_width=WINDOW_WIDTH,
         window_height=WINDOW_HEIGHT,
         window_title=WINDOW_TITLE,
         fps=FPS,
         projects_dir=PROJECTS_DIR,
+        fullscreen=bool(settings.get("fullscreen", False)),  # ✅ НОВОЕ
     )
 
 
