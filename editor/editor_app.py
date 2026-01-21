@@ -394,17 +394,6 @@ def _run_editor_impl(
     engine_settings["fullscreen"] = bool(fullscreen)
     settings_open = False
 
-    def _update_exit_button() -> None:
-        """🧠 ЛОГИКА: пересчитываем позицию кнопки выхода (правый верх)."""
-        nonlocal EXIT_BTN_X, EXIT_BTN_Y
-        EXIT_BTN_X = win_w - EXIT_BTN_W - EXIT_BTN_MARGIN
-        EXIT_BTN_Y = EXIT_BTN_MARGIN
-        btn_exit.x = EXIT_BTN_X
-        btn_exit.y = EXIT_BTN_Y
-
-        # ✅ ВАЖНО: держим "Настройки" на одном уровне с "Выход" по Y
-        btn_settings.y = EXIT_BTN_Y
-
     # ============================================================
     # ✅ КНОПКИ МЕНЕДЖЕРА ПРОЕКТОВ
     # ============================================================
@@ -415,18 +404,28 @@ def _run_editor_impl(
     btn_open_project = pygame.Rect(UI_MARGIN_X, ui_buttons_y + BUTTON_H + UI_GAP_X, BUTTON_W, BUTTON_H)
 
     # ============================================================
-    # ✅ Кнопка "Настройки": X как у "Создать"/"Открыть"
-    # + Уже как "Выход"
-    # + Y = как у "Выход"
+    # ✅ Кнопка "Настройки"
+    # - Узкая как "Выход"
+    # - Слева
+    # - По Y на одном уровне с "Выход"
     # ============================================================
     SETTINGS_BTN_W = int(BUTTON_W * 0.72)  # 🔧 МОЖНО МЕНЯТЬ: ширина (как у кнопки "Выход")
     SETTINGS_BTN_H = int(BUTTON_H * 0.78)  # 🔧 МОЖНО МЕНЯТЬ: высота (как у кнопки "Выход")
     SETTINGS_BTN_X = UI_MARGIN_X  # ✅ слева, вровень с "Создать"/"Открыть"
-
-    # ✅ сразу ставим на один уровень с "Выход"
-    SETTINGS_BTN_Y = EXIT_BTN_Y  # ✅ ключевая правка
+    SETTINGS_BTN_Y = EXIT_BTN_Y  # ✅ на одном уровне с "Выход"
 
     btn_settings = pygame.Rect(SETTINGS_BTN_X, SETTINGS_BTN_Y, SETTINGS_BTN_W, SETTINGS_BTN_H)
+
+    def _update_exit_button() -> None:
+        """🧠 ЛОГИКА: пересчитываем позицию кнопки выхода (правый верх)."""
+        nonlocal EXIT_BTN_X, EXIT_BTN_Y
+        EXIT_BTN_X = win_w - EXIT_BTN_W - EXIT_BTN_MARGIN
+        EXIT_BTN_Y = EXIT_BTN_MARGIN
+        btn_exit.x = EXIT_BTN_X
+        btn_exit.y = EXIT_BTN_Y
+
+        # ✅ держим "Настройки" на одном уровне с "Выход" по Y
+        btn_settings.y = EXIT_BTN_Y
 
     selected_project_index: int | None = None
 
@@ -899,8 +898,8 @@ def _run_editor_impl(
 
         status_lines_count = 1 if status_message else 0
 
-        status_y = win_h - 18 - (status_lines_count * line_h)  # 🔧 МОЖНО МЕНЯТЬ
-        info_y = status_y - (10 + (info_lines_count * line_h))  # 🔧 МОЖНО МЕНЯТЬ
+        status_y = win_h - BOTTOM_SAFE_PAD - (status_lines_count * line_h)  # 🔧 МОЖНО МЕНЯТЬ: нижний отступ
+        info_y = status_y - (STATUS_GAP + (info_lines_count * line_h))  # 🔧 МОЖНО МЕНЯТЬ: зазор между блоками
 
         if info_lines_count > 0:
             info_lines = [
