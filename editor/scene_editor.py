@@ -8,79 +8,224 @@ from engine.config_engine import (  # 🔧 МОЖНО МЕНЯТЬ: цвета �
     FONT_SIZE,
 )
 
+
+# ============================================================
+# ✅ ПРОЕКТ: имя проекта по scene_path -> project.json
+# ============================================================
+def _get_project_name_from_scene_path(scene_path: Path) -> str:
+    """
+    🧠 ЛОГИКА:
+    Определяем имя проекта по пути сцены:
+      .../<project_root>/scenes/<scene>.scene.json
+
+    1) project_root = scene_path.parent.parent
+    2) читаем project.json и берём поле "name"
+    3) fallback: имя папки project_root
+    """
+    try:
+        project_root = scene_path.resolve().parent.parent
+        project_json = project_root / "project.json"
+
+        if project_json.exists():
+            with open(project_json, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            name = data.get("name")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+
+        return project_root.name
+    except Exception:
+        return "Проект"
+
+
 def load_scene(scene_path: Path):
     """🧠 ЛОГИКА: загрузка сцены из файла JSON."""
     if scene_path.exists():
-        with open(scene_path, 'r', encoding='utf-8') as file:
+        with open(scene_path, "r", encoding="utf-8") as file:
             return json.load(file)
     return {"name": "main", "entities": []}  # 🧠 ЛОГИКА: если сцена не существует
 
+
 def save_scene(scene_path: Path, scene_data):
     """🧠 ЛОГИКА: сохраняет изменённую сцену в файл."""
-    with open(scene_path, 'w', encoding='utf-8') as file:
+    with open(scene_path, "w", encoding="utf-8") as file:
         json.dump(scene_data, file, ensure_ascii=False, indent=2)
+
 
 def draw_entities(screen, entities, font):
     """🧠 ЛОГИКА: рисует все сущности на экране."""
     for entity in entities:
-        if entity['type'] == 'rect':
+        if entity.get("type") == "rect":
             pygame.draw.rect(
                 screen,
-                (255, 255, 255),  # 🧠 ЛОГИКА: белый квадрат (можно сделать цветом из сцены)
-                (entity['x'], entity['y'], entity['w'], entity['h'])
+                (255, 255, 255),  # 🔧 МОЖНО МЕНЯТЬ
+                (entity["x"], entity["y"], entity["w"], entity["h"]),
             )
-            # 🧠 ЛОГИКА: рисуем идентификатор сущности (для отображения)
-            label = font.render(entity['id'], True, EDITOR_TEXT_COLOR)
-            screen.blit(label, (entity['x'], entity['y'] - 20))  # 🧠 ЛОГИКА: немного выше квадрата
+            label = font.render(str(entity.get("id", "")), True, EDITOR_TEXT_COLOR)
+            screen.blit(label, (entity["x"], entity["y"] - 20))  # 🔧 МОЖНО МЕНЯТЬ
 
-def handle_entity_move(entities, mouse_pos, selected_entity):
+
+def handle_entity_move(mouse_pos, selected_entity):
     """🧠 ЛОГИКА: если выбрана сущность, она двигается за мышью."""
     if selected_entity:
-        selected_entity['x'], selected_entity['y'] = mouse_pos  # 🧠 ЛОГИКА: перемещаем сущность
+        selected_entity["x"], selected_entity["y"] = mouse_pos
+
+
+def _draw_project_badge(screen, font, project_name: str) -> pygame.Rect:
+    """
+    🧠 ЛОГИКА:
+    Рисуем имя проекта слева сверху.
+    Возвращаем rect бейджа (иногда удобно для выравнивания).
+    """
+    BADGE_X = 10  # 🔧 МОЖНО МЕНЯТЬ
+    BADGE_Y = 10  # 🔧 МОЖНО МЕНЯТЬ
+    PAD_X = 10    # 🔧 МОЖНО МЕНЯТЬ
+    PAD_Y = 6     # 🔧 МОЖНО МЕНЯТЬ
+
+    TEXT_COLOR = EDITOR_TEXT_COLOR  # 🔧 МОЖНО МЕНЯТЬ
+    BG_COLOR = (20, 20, 24)         # 🔧 МОЖНО МЕНЯТЬ
+    BORDER_COLOR = (80, 80, 92)     # 🔧 МОЖНО МЕНЯТЬ
+    BORDER_W = 1                    # 🔧 МОЖНО МЕНЯТЬ
+    RADIUS = 8                      # 🔧 МОЖНО МЕНЯТЬ
+
+    text = f"Проект: {project_name}"
+    surf = font.render(text, True, TEXT_COLOR)
+    rect = surf.get_rect(topleft=(BADGE_X + PAD_X, BADGE_Y + PAD_Y))
+
+    bg_rect = pygame.Rect(
+        BADGE_X,
+        BADGE_Y,
+        rect.width + PAD_X * 2,
+        rect.height + PAD_Y * 2,
+    )
+
+    pygame.draw.rect(screen, BG_COLOR, bg_rect, border_radius=RADIUS)
+    pygame.draw.rect(screen, BORDER_COLOR, bg_rect, BORDER_W, border_radius=RADIUS)
+    screen.blit(surf, rect)
+
+    return bg_rect
+
+
+# ============================================================
+# ✅ КНОПКА "К проектам" (правый верхний угол, компактная)
+# ============================================================
+def _get_back_button_rect(window_width: int) -> pygame.Rect:
+    """
+    🧠 ЛОГИКА:
+    Единое место, где вычисляем rect кнопки — чтобы:
+    - не рисовать кнопку во время обработки событий
+    - одинаково работали клики и рендер
+
+    🔧 МОЖНО МЕНЯТЬ:
+    - размеры и отступы
+    """
+    MARGIN = 10  # 🔧 МОЖНО МЕНЯТЬ
+    BTN_W = 150  # 🔧 МОЖНО МЕНЯТЬ (меньше)
+    BTN_H = 28   # 🔧 МОЖНО МЕНЯТЬ (меньше)
+
+    x = window_width - BTN_W - MARGIN
+    y = MARGIN
+    return pygame.Rect(x, y, BTN_W, BTN_H)
+
+
+def _draw_back_button(screen, font, mouse_pos, window_width: int) -> tuple[pygame.Rect, bool]:
+    """
+    🧠 ЛОГИКА:
+    Кнопка возврата в менеджер проектов.
+    Возвращаем (rect, is_hover).
+
+    🔧 МОЖНО МЕНЯТЬ:
+    - цвета/рамку/скругление
+    - текст
+    """
+    BG = (35, 35, 40)        # 🔧 МОЖНО МЕНЯТЬ
+    BG_HOVER = (55, 55, 64)  # 🔧 МОЖНО МЕНЯТЬ
+    BORDER = (90, 90, 105)   # 🔧 МОЖНО МЕНЯТЬ
+    BORDER_W = 1             # 🔧 МОЖНО МЕНЯТЬ
+    RADIUS = 8               # 🔧 МОЖНО МЕНЯТЬ
+
+    text = "К проектам"  # ✅ без стрелки (убрали “квадратик”)
+
+    rect = _get_back_button_rect(window_width)
+    is_hover = rect.collidepoint(mouse_pos)
+
+    pygame.draw.rect(screen, BG_HOVER if is_hover else BG, rect, border_radius=RADIUS)
+    pygame.draw.rect(screen, BORDER, rect, BORDER_W, border_radius=RADIUS)
+
+    label = font.render(text, True, EDITOR_TEXT_COLOR)
+    screen.blit(label, label.get_rect(center=rect.center))
+
+    return rect, is_hover
+
 
 def run_scene_editor(scene_path, window_width, window_height, fps):
-    """🧠 ЛОГИКА: основной цикл редактора сцены."""
-    pygame.init()  # 🧠 ЛОГИКА: инициализация pygame
+    """
+    🧠 ЛОГИКА: основной цикл редактора сцены.
 
-    screen = pygame.display.set_mode((window_width, window_height))  # 🧠 ЛОГИКА: создаём окно
-    pygame.display.set_caption("Редактор сцены")  # 🧠 ЛОГИКА: заголовок окна
-    
-    font = pygame.font.SysFont(None, FONT_SIZE)  # 🧠 ЛОГИКА: шрифт для текста
-    scene_data = load_scene(scene_path)  # 🧠 ЛОГИКА: загрузка сцены
-    selected_entity = None  # 🧠 ЛОГИКА: сущность, которая выбрана для перемещения
+    Важно:
+    - НЕ вызываем pygame.quit() здесь (чтобы не убить display у editor_app)
+    - Возвращаем код выхода:
+        "quit" — пользователь закрыл окно крестиком (закрываем весь движок)
+        "back" — пользователь нажал кнопку "К проектам" (возврат в менеджер)
+    """
+    pygame.display.set_caption("Редактор сцены")
 
-    running = True  # 🧠 ЛОГИКА: главный цикл редактора
+    screen = pygame.display.set_mode((window_width, window_height))
+    clock = pygame.time.Clock()
+
+    font = pygame.font.SysFont(None, FONT_SIZE)
+    scene_path = Path(scene_path)
+    scene_data = load_scene(scene_path)
+    selected_entity = None
+
+    project_name = _get_project_name_from_scene_path(scene_path)
+
+    running = True
     while running:
-        mouse_pos = pygame.mouse.get_pos()  # 🧠 ЛОГИКА: положение мыши
-        
+        clock.tick(fps)
+        mouse_pos = pygame.mouse.get_pos()
+
+        back_btn_rect = _get_back_button_rect(window_width)
+
         # --- СОБЫТИЯ ---
-        for event in pygame.event.get():  # 🧠 ЛОГИКА: очередь событий
-            if event.type == pygame.QUIT:  # 🧠 ЛОГИКА: закрытие окна
-                running = False
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return "quit"
 
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:  # 🧠 ЛОГИКА: левая кнопка мыши
-                for entity in scene_data['entities']:
-                    rect = pygame.Rect(entity['x'], entity['y'], entity['w'], entity['h'])
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                # ✅ Клик по кнопке "К проектам"
+                if back_btn_rect.collidepoint(event.pos):
+                    return "back"
+
+                # ✅ Выбор сущности
+                for entity in scene_data.get("entities", []):
+                    if entity.get("type") != "rect":
+                        continue
+                    rect = pygame.Rect(entity["x"], entity["y"], entity["w"], entity["h"])
                     if rect.collidepoint(mouse_pos):
-                        selected_entity = entity  # 🧠 ЛОГИКА: выбрали сущность для перемещения
+                        selected_entity = entity
 
-            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:  # 🧠 ЛОГИКА: отпустили кнопку
-                selected_entity = None  # 🧠 ЛОГИКА: убираем выбор сущности
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                selected_entity = None
 
         # --- РЕНДЕР ---
-        screen.fill(EDITOR_BG_COLOR)  # 🧠 ЛОГИКА: фон редактора
+        screen.fill(EDITOR_BG_COLOR)
 
-        # 🧠 ЛОГИКА: рисуем сущности
-        draw_entities(screen, scene_data['entities'], font)
+        # ✅ Бейдж проекта слева сверху
+        _draw_project_badge(screen, font, project_name)
 
-        # 🧠 ЛОГИКА: перетаскивание сущности
+        # ✅ Кнопка "К проектам" справа сверху (компактная)
+        _draw_back_button(screen, font, mouse_pos, window_width)
+
+        draw_entities(screen, scene_data.get("entities", []), font)
+
         if selected_entity:
-            handle_entity_move(scene_data['entities'], mouse_pos, selected_entity)
+            handle_entity_move(mouse_pos, selected_entity)
 
-        pygame.display.flip()  # 🧠 ЛОГИКА: показываем кадр
+        pygame.display.flip()
 
         # --- СОХРАНЕНИЕ СЦЕНЫ ---
-        if pygame.key.get_pressed()[pygame.K_s]:  # 🧠 ЛОГИКА: сохраняем при нажатии S
+        if pygame.key.get_pressed()[pygame.K_s]:
             save_scene(scene_path, scene_data)
 
-    pygame.quit()  # 🧠 ЛОГИКА: корректное завершение
+    return "back"

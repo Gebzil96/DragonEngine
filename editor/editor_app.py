@@ -128,8 +128,8 @@ def _draw_exit_button(screen, font, rect, text, mouse_pos):
     """
     is_hover = rect.collidepoint(mouse_pos)
 
-    EXIT_BG = BUTTON_BG_COLOR                 # 🔧 МОЖНО МЕНЯТЬ: обычный фон
-    EXIT_HOVER_BG_2 = (180, 55, 55)           # 🔧 МОЖНО МЕНЯТЬ: усиление, когда "сильно красный"
+    EXIT_BG = BUTTON_BG_COLOR  # 🔧 МОЖНО МЕНЯТЬ: обычный фон
+    EXIT_HOVER_BG_2 = (180, 55, 55)  # 🔧 МОЖНО МЕНЯТЬ: усиление, когда "сильно красный"
 
     bg = EXIT_HOVER_BG_2 if is_hover else EXIT_BG
 
@@ -155,7 +155,6 @@ def _blend_color(base_rgb: tuple[int, int, int], add_rgb: tuple[int, int, int], 
 # ============================================================
 # ✅ размер папки проекта (в байтах) + красивый формат
 # ============================================================
-
 def _get_dir_size_bytes(folder: Path) -> int:
     """
     🧠 ЛОГИКА: суммируем размеры всех файлов в папке (рекурсивно).
@@ -207,7 +206,7 @@ def check_scene_file(scene_path: Path) -> bool:
 def create_scene_file(scene_path: Path):
     scene_data = {
         "name": "MainScene",
-        "entities": []  # 🔧 МОЖНО МЕНЯТЬ
+        "entities": [],  # 🔧 МОЖНО МЕНЯТЬ
     }
     scene_path.parent.mkdir(parents=True, exist_ok=True)
     with open(scene_path, "w", encoding="utf-8") as scene_file:
@@ -346,15 +345,12 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
     title_text = "DragonEngine"
     manager_y = TITLE_Y + title_font.size(title_text)[1] + TITLE_GAP_Y
 
-    ui_buttons_y = max(
-        UI_TOP_Y,
-        manager_y + font.get_height() + 10
-    )
+    ui_buttons_y = max(UI_TOP_Y, manager_y + font.get_height() + 10)
 
     # ✅ Кнопка "Выход" — ВЕРХНИЙ ПРАВЫЙ УГОЛ (меньше стандартной)
     EXIT_BTN_W = int(BUTTON_W * 0.72)  # 🔧 МОЖНО МЕНЯТЬ: ширина кнопки "Выход"
     EXIT_BTN_H = int(BUTTON_H * 0.78)  # 🔧 МОЖНО МЕНЯТЬ: высота кнопки "Выход"
-    EXIT_BTN_MARGIN = 10               # 🔧 МОЖНО МЕНЯТЬ: отступ от краёв
+    EXIT_BTN_MARGIN = 10  # 🔧 МОЖНО МЕНЯТЬ: отступ от краёв
 
     EXIT_BTN_X = window_width - EXIT_BTN_W - EXIT_BTN_MARGIN
     EXIT_BTN_Y = EXIT_BTN_MARGIN
@@ -376,26 +372,26 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
     DOUBLE_CLICK_MS = 350  # 🔧 МОЖНО МЕНЯТЬ
 
     PROJECT_LIST_X = UI_MARGIN_X  # 🔧 МОЖНО МЕНЯТЬ
-    PROJECT_LIST_Y = 240          # 🔧 МОЖНО МЕНЯТЬ
-    PROJECT_ITEM_W = 420          # 🔧 МОЖНО МЕНЯТЬ
-    PROJECT_ITEM_H = 36           # 🔧 МОЖНО МЕНЯТЬ
-    PROJECT_ITEM_GAP = 8          # 🔧 МОЖНО МЕНЯТЬ
+    PROJECT_LIST_Y = 240  # 🔧 МОЖНО МЕНЯТЬ
+    PROJECT_ITEM_W = 420  # 🔧 МОЖНО МЕНЯТЬ
+    PROJECT_ITEM_H = 36  # 🔧 МОЖНО МЕНЯТЬ
+    PROJECT_ITEM_GAP = 8  # 🔧 МОЖНО МЕНЯТЬ
 
     # ✅ Пульсация кнопок
-    DELETE_PULSE_SPEED = 3.2         # 🔧 МОЖНО МЕНЯТЬ
+    DELETE_PULSE_SPEED = 3.2  # 🔧 МОЖНО МЕНЯТЬ
     DELETE_PULSE_ADD = (90, 30, 30)  # 🔧 МОЖНО МЕНЯТЬ
 
-    OPEN_PULSE_SPEED = 2.6           # 🔧 МОЖНО МЕНЯТЬ
-    OPEN_PULSE_ADD = (30, 60, 90)    # 🔧 МОЖНО МЕНЯТЬ
+    OPEN_PULSE_SPEED = 2.6  # 🔧 МОЖНО МЕНЯТЬ
+    OPEN_PULSE_ADD = (30, 60, 90)  # 🔧 МОЖНО МЕНЯТЬ
 
     # ✅ компактные кнопки для выбранного проекта (в ряд)
-    SELECTED_BUTTON_GAP_X = 10        # 🔧 МОЖНО МЕНЯТЬ
-    SELECTED_BUTTON_MIN_W = 120       # 🔧 МОЖНО МЕНЯТЬ
-    SELECTED_BUTTON_MAX_W = 220       # 🔧 МОЖНО МЕНЯТЬ
-    SELECTED_BUTTON_H = 32            # 🔧 МОЖНО МЕНЯТЬ
+    SELECTED_BUTTON_GAP_X = 10  # 🔧 МОЖНО МЕНЯТЬ
+    SELECTED_BUTTON_MIN_W = 120  # 🔧 МОЖНО МЕНЯТЬ
+    SELECTED_BUTTON_MAX_W = 220  # 🔧 МОЖНО МЕНЯТЬ
+    SELECTED_BUTTON_H = 32  # 🔧 МОЖНО МЕНЯТЬ
 
-    BOTTOM_SAFE_PAD = 18   # 🔧 МОЖНО МЕНЯТЬ
-    STATUS_GAP = 10        # 🔧 МОЖНО МЕНЯТЬ
+    BOTTOM_SAFE_PAD = 18  # 🔧 МОЖНО МЕНЯТЬ
+    STATUS_GAP = 10  # 🔧 МОЖНО МЕНЯТЬ
 
     def _selected_buttons_panel_x() -> int:
         return UI_MARGIN_X + PROJECT_ITEM_W + UI_GAP_X
@@ -444,8 +440,39 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         selected_project_size_text = ""
         selected_project_cached_root = None
 
+    # ============================================================
+    # ✅ Запуск сцены + возврат в менеджер
+    # ============================================================
+    def _launch_scene(scene_path: Path) -> None:
+        """
+        🧠 ЛОГИКА:
+        Запускаем редактор сцены и возвращаемся обратно в менеджер проектов.
+
+        scene_editor возвращает:
+        - "quit" -> пользователь закрыл окно сцены крестиком (закрываем весь движок)
+        - "back" -> пользователь нажал "К проектам" (возвращаемся в менеджер)
+        """
+        nonlocal screen, status_message
+
+        result = run_scene_editor(scene_path, window_width, window_height, fps)
+
+        if result == "quit":
+            force_quit(0)
+
+        # ✅ FIX: возвращаем заголовок окна менеджера
+        pygame.display.set_caption(window_title)
+
+        # ✅ FIX: возвращаем режим окна менеджера (на будущее — если сцена меняла set_mode)
+        screen = pygame.display.set_mode((window_width, window_height))
+
+        # ✅ очищаем хвост событий (клики/клавиши из сцены не должны "протекать" в менеджер)
+        pygame.event.clear()
+        pygame.event.pump()
+
+        status_message = "Возврат в менеджер проектов."
+
     def _do_create():
-        nonlocal status_message, running
+        nonlocal status_message
         project_location = filedialog.askdirectory(title="Выберите папку для проекта")
         _restore_pygame_focus()
 
@@ -462,11 +489,10 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                     print(f"Открытие стартовой сцены: {created.start_scene}")
 
                     if created.start_scene and check_scene_file(created.start_scene):
-                        run_scene_editor(created.start_scene, window_width, window_height, fps)
-                        running = False
+                        _launch_scene(created.start_scene)
 
     def _do_last():
-        nonlocal status_message, running
+        nonlocal status_message
         print("Клик по кнопке 'Последний проект'")
         info = open_last_project(projects_dir)
         if info is None:
@@ -479,11 +505,10 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
             save_last_project(info.root)
 
             if check_scene_file(info.start_scene):
-                run_scene_editor(info.start_scene, window_width, window_height, fps)
-                running = False
+                _launch_scene(info.start_scene)
 
     def _do_open():
-        nonlocal status_message, running
+        nonlocal status_message
         print("Клик по кнопке 'Открыть проект'")
         project_root = open_selected_project()
         _restore_pygame_focus()
@@ -499,11 +524,10 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                 save_last_project(info.root)
 
                 if check_scene_file(info.start_scene):
-                    run_scene_editor(info.start_scene, window_width, window_height, fps)
-                    running = False
+                    _launch_scene(info.start_scene)
 
     def _do_open_selected():
-        nonlocal status_message, running
+        nonlocal status_message
         if selected_project_index is None:
             return
 
@@ -518,8 +542,7 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         save_last_project(info.root)
 
         if check_scene_file(info.start_scene):
-            run_scene_editor(info.start_scene, window_width, window_height, fps)
-            running = False
+            _launch_scene(info.start_scene)
 
     def _do_delete():
         nonlocal status_message, selected_project_index, last_click_index, last_click_time
@@ -532,7 +555,7 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         info = all_projects_local[selected_project_index]
         confirm = messagebox.askyesno(
             "Удаление проекта",
-            f"Удалить проект '{info.name}'?\n\nПапка будет удалена полностью:\n{info.root}"
+            f"Удалить проект '{info.name}'?\n\nПапка будет удалена полностью:\n{info.root}",
         )
         _restore_pygame_focus()
 
@@ -622,10 +645,7 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                         _clear_selected_project_info()
 
                     now_ms = pygame.time.get_ticks()
-                    is_double_click = (
-                        last_click_index == clicked_index
-                        and (now_ms - last_click_time) <= DOUBLE_CLICK_MS
-                    )
+                    is_double_click = last_click_index == clicked_index and (now_ms - last_click_time) <= DOUBLE_CLICK_MS
                     last_click_index = clicked_index
                     last_click_time = now_ms
 
@@ -635,8 +655,7 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                         save_last_project(info.root)
 
                         if check_scene_file(info.start_scene):
-                            run_scene_editor(info.start_scene, window_width, window_height, fps)
-                            running = False
+                            _launch_scene(info.start_scene)
                 else:
                     selected_project_index = None
                     last_click_index = None
@@ -679,19 +698,13 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
         title_x = (window_width - title_w) // 2
         screen.blit(title_font.render(title_text, True, EDITOR_TEXT_COLOR), (title_x, TITLE_Y))
 
-        screen.blit(
-            font.render("Менеджер проектов:", True, EDITOR_TEXT_COLOR),
-            (UI_MARGIN_X, manager_y)
-        )
+        screen.blit(font.render("Менеджер проектов:", True, EDITOR_TEXT_COLOR), (UI_MARGIN_X, manager_y))
 
         _draw_button(screen, font, btn_create, "Создать проект", mouse_pos)
         _draw_button(screen, font, btn_last_project, "Последний проект", mouse_pos)
         _draw_button(screen, font, btn_open_project, "Открыть проект", mouse_pos)
 
-        screen.blit(
-            font.render("Проекты:", True, EDITOR_TEXT_COLOR),
-            (PROJECT_LIST_X, PROJECT_LIST_Y - 30)
-        )
+        screen.blit(font.render("Проекты:", True, EDITOR_TEXT_COLOR), (PROJECT_LIST_X, PROJECT_LIST_Y - 30))
 
         y = PROJECT_LIST_Y
         if all_projects:
@@ -701,14 +714,11 @@ def _run_editor_impl(window_width: int, window_height: int, window_title: str, f
                 if selected_project_index == i:
                     pygame.draw.rect(screen, (70, 100, 160), item_rect)  # 🔧 МОЖНО МЕНЯТЬ
                 else:
-                    pygame.draw.rect(screen, (40, 40, 46), item_rect)    # 🔧 МОЖНО МЕНЯТЬ
+                    pygame.draw.rect(screen, (40, 40, 46), item_rect)  # 🔧 МОЖНО МЕНЯТЬ
 
                 pygame.draw.rect(screen, BUTTON_BORDER_COLOR, item_rect, 1)
 
-                screen.blit(
-                    font.render(p.name, True, EDITOR_TEXT_COLOR),
-                    (item_rect.x + 10, item_rect.y + 6)
-                )
+                screen.blit(font.render(p.name, True, EDITOR_TEXT_COLOR), (item_rect.x + 10, item_rect.y + 6))
 
                 y += PROJECT_ITEM_H + PROJECT_ITEM_GAP
         else:
