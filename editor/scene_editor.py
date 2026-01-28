@@ -1,3 +1,4 @@
+import os  # ✅ НОВОЕ: фиксация позиции окна SDL
 import pygame  # 🧠 ЛОГИКА: для рисования и обработки событий
 import json  # 🧠 ЛОГИКА: для загрузки/сохранения сцены
 from pathlib import Path  # 🧠 ЛОГИКА: для путей
@@ -158,6 +159,37 @@ def _draw_back_button(screen, font, mouse_pos, window_width: int) -> tuple[pygam
     return rect, is_hover
 
 
+# ============================================================
+# ✅ FULLSCREEN / BORDERLESS DETECT
+# ============================================================
+def _get_current_display_mode() -> str:
+    """
+    🧠 ЛОГИКА:
+    Определяем режим окна, который уже выставил менеджер проектов.
+    Возвращаем: "fullscreen" | "borderless" | "windowed"
+    """
+    surf = pygame.display.get_surface()
+    if surf is None:
+        return "windowed"
+
+    flags = surf.get_flags()
+
+    if flags & pygame.FULLSCREEN:
+        return "fullscreen"
+
+    # Borderless fullscreen: NOFRAME + размер как у дисплея
+    if flags & pygame.NOFRAME:
+        try:
+            info = pygame.display.Info()
+            w, h = surf.get_size()
+            if w == info.current_w and h == info.current_h:
+                return "borderless"
+        except Exception:
+            pass
+
+    return "windowed"
+
+
 def run_scene_editor(scene_path, window_width, window_height, fps):
     """
     🧠 ЛОГИКА: основной цикл редактора сцены.
@@ -168,9 +200,29 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
         "quit" — пользователь закрыл окно крестиком (закрываем весь движок)
         "back" — пользователь нажал кнопку "К проектам" (возврат в менеджер)
     """
+
+    # ✅ SDL читает позицию окна при создании.
+    os.environ["SDL_VIDEO_CENTERED"] = "0"
+    os.environ["SDL_VIDEO_WINDOW_POS"] = "0,0"
+
     pygame.display.set_caption("Редактор сцены")
 
-    screen = pygame.display.set_mode((window_width, window_height))
+    mode = _get_current_display_mode()
+
+    if mode == "fullscreen":
+        flags = pygame.FULLSCREEN
+        screen = pygame.display.set_mode((0, 0), flags)
+    elif mode == "borderless":
+        info = pygame.display.Info()
+        flags = pygame.NOFRAME
+        screen = pygame.display.set_mode((info.current_w, info.current_h), flags)
+    else:
+        flags = 0
+        screen = pygame.display.set_mode((window_width, window_height), flags)
+
+    # ✅ Важно: обновляем реальные размеры (в fullscreen/borderless они будут нативными)
+    window_width, window_height = screen.get_size()
+
     clock = pygame.time.Clock()
 
     font = pygame.font.SysFont(None, FONT_SIZE)
@@ -184,6 +236,9 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
     while running:
         clock.tick(fps)
         mouse_pos = pygame.mouse.get_pos()
+
+        # ✅ На случай смены разрешения/режима — берём актуальный размер
+        window_width, window_height = screen.get_size()
 
         back_btn_rect = _get_back_button_rect(window_width)
 

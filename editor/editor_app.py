@@ -6,7 +6,7 @@ from pathlib import Path
 import json
 import math
 import time
-import os  # ✅ НОВОЕ: для подсчёта размера папки + принудительного выхода
+import os  # ✅ для подсчёта размера папки + принудительного выхода
 
 # ✅ WinAPI для принудительного возврата фокуса (Windows)
 import ctypes
@@ -48,7 +48,7 @@ from project_manager import (
 
 from editor.scene_editor import run_scene_editor
 
-from engine_settings import load_settings, save_settings  # ✅ НОВОЕ: глобальные настройки
+from engine_settings import load_settings, save_settings  # ✅ глобальные настройки
 
 
 # 🧠 ЛОГИКА: tkinter нужен только для диалогов
@@ -75,7 +75,7 @@ def force_quit(exit_code: int = 0) -> None:
         pass
 
     # ⚠️ ПАРАМЕТР (можно менять): пытаться закрыть tkinter при выходе
-    CLOSE_TKINTER = True
+    CLOSE_TKINTER = True  # 🔧 МОЖНО МЕНЯТЬ
 
     if CLOSE_TKINTER:
         try:
@@ -261,6 +261,53 @@ def open_selected_project() -> Path | None:
 
 
 # ============================================================
+# ✅ WinAPI: прибиваем окно к (0,0) и нужному размеру (Windows only)
+# ============================================================
+def _win_force_window_rect(x: int, y: int, w: int, h: int) -> None:
+    """
+    🧠 ЛОГИКА:
+    На Windows SDL иногда "применяет" NOFRAME, но не меняет размер/позицию как надо.
+    Поэтому после set_mode() мы добиваем окно через SetWindowPos.
+    """
+    if sys.platform != "win32":
+        return
+
+    try:
+        hwnd_raw = pygame.display.get_wm_info().get("window")
+        if not hwnd_raw:
+            return
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+        SWP_NOZORDER = 0x0004
+        SWP_NOACTIVATE = 0x0010
+        SWP_FRAMECHANGED = 0x0020
+
+        user32.SetWindowPos.argtypes = [
+            wintypes.HWND,
+            wintypes.HWND,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint,
+        ]
+        user32.SetWindowPos.restype = wintypes.BOOL
+
+        user32.SetWindowPos(
+            wintypes.HWND(hwnd_raw),
+            None,
+            int(x),
+            int(y),
+            int(w),
+            int(h),
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        )
+    except Exception:
+        return
+
+
+# ============================================================
 # ✅ ЖЁСТКИЙ ФИКС ФОКУСА ДЛЯ WINDOWS (AttachThreadInput)
 # ============================================================
 _user32 = ctypes.windll.user32
@@ -348,21 +395,53 @@ def _run_editor_impl(
     # ============================================================
     def _apply_display_mode(fullscreen_on: bool):
         """🧠 ЛОГИКА:
-        В pygame fullscreen переключается ТОЛЬКО через пересоздание окна (set_mode).
-        Возвращаем (screen, actual_w, actual_h).
+        Переключаем режим окна.
+
+        Важно:
+        - чтобы tkinter окна НЕ сворачивали движок, используем borderless fullscreen (NOFRAME)
+        - чтобы borderless реально растягивался при переключении из окна, делаем display.quit/init
         """
-        flags_local = pygame.FULLSCREEN if fullscreen_on else 0
+        # 🔧 МОЖНО МЕНЯТЬ: True = borderless fullscreen (НЕ сворачивается), False = pygame.FULLSCREEN (может сворачиваться)
+        USE_BORDERLESS_FULLSCREEN = True  # 🔧 МОЖНО МЕНЯТЬ
 
         # 🔧 МОЖНО МЕНЯТЬ: включать RESIZABLE в оконном режиме (если захочешь)
-        WINDOW_RESIZABLE = False
+        WINDOW_RESIZABLE = False  # 🔧 МОЖНО МЕНЯТЬ
 
-        if not fullscreen_on and WINDOW_RESIZABLE:
+        if fullscreen_on:
+            # ✅ позиция окна (на всякий случай)
+            os.environ["SDL_VIDEO_CENTERED"] = "0"
+            os.environ["SDL_VIDEO_WINDOW_POS"] = "0,0"
+
+            # ✅ КЛЮЧ: переинициализация display, иначе SDL иногда “оставляет” старый размер окна
+            try:
+                pygame.display.quit()
+            except Exception:
+                pass
+            pygame.display.init()
+
+            info = pygame.display.Info()
+            screen_w, screen_h = info.current_w, info.current_h
+
+            if USE_BORDERLESS_FULLSCREEN:
+                flags_local = pygame.NOFRAME
+                local_screen = pygame.display.set_mode((screen_w, screen_h), flags_local)
+
+                # ✅ добиваем размер/позицию на Windows (если SDL чудит)
+                _win_force_window_rect(0, 0, screen_w, screen_h)
+            else:
+                flags_local = pygame.FULLSCREEN
+                local_screen = pygame.display.set_mode((0, 0), flags_local)
+                _win_force_window_rect(0, 0, screen_w, screen_h)
+
+            w, h = local_screen.get_size()
+            return local_screen, w, h
+
+        # ---- оконный режим ----
+        flags_local = 0
+        if WINDOW_RESIZABLE:
             flags_local |= pygame.RESIZABLE
 
-        local_screen = pygame.display.set_mode(
-            (0, 0) if fullscreen_on else (window_width, window_height),
-            flags_local,
-        )
+        local_screen = pygame.display.set_mode((window_width, window_height), flags_local)
         w, h = local_screen.get_size()
         return local_screen, w, h
 
@@ -373,6 +452,73 @@ def _run_editor_impl(
     font = pygame.font.SysFont(None, DEFAULT_FONT_SIZE)
     title_font = pygame.font.SysFont(None, TITLE_FONT_SIZE)
 
+    # ============================================================
+    # ✅ UX: затемнение + "пауза" при открытии tkinter-окон
+    # ============================================================
+    def _draw_dim_pause_overlay(text: str = "Открыто окно…") -> None:
+        """
+        🧠 ЛОГИКА:
+        Tkinter-диалоги блокируют главный поток, поэтому мы заранее рисуем "приглушение"
+        и делаем flip — экран застывает в этом виде, пока модалка открыта.
+
+        🔧 МОЖНО МЕНЯТЬ:
+        - ALPHA: степень затемнения
+        - текст и его размер/позицию
+        """
+        nonlocal screen
+
+        # ✅ актуальные размеры (важно в fullscreen)
+        w, h = screen.get_size()
+
+        ALPHA = 150  # 🔧 МОЖНО МЕНЯТЬ: 0..255 (чем больше, тем темнее)
+        overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, ALPHA))
+        screen.blit(overlay, (0, 0))
+
+        # ✅ небольшая подсказка в центре
+        TEXT_COLOR = (235, 235, 245)  # 🔧 МОЖНО МЕНЯТЬ
+        SUB_COLOR = (170, 170, 185)   # 🔧 МОЖНО МЕНЯТЬ
+
+        big = pygame.font.SysFont(None, int(DEFAULT_FONT_SIZE * 1.25))  # 🔧 МОЖНО МЕНЯТЬ
+        small = pygame.font.SysFont(None, int(DEFAULT_FONT_SIZE * 0.95))  # 🔧 МОЖНО МЕНЯТЬ
+
+        line1 = big.render(text, True, TEXT_COLOR)
+        line2 = small.render("Движок на паузе, пока вы не закроете это окно", True, SUB_COLOR)
+
+        cx, cy = w // 2, h // 2
+        screen.blit(line1, line1.get_rect(center=(cx, cy - 10)))
+        screen.blit(line2, line2.get_rect(center=(cx, cy + 22)))
+
+        pygame.display.flip()
+
+    def _draw_dim_overlay_only(alpha: int = 110) -> None:
+        """
+        🧠 ЛОГИКА:
+        Затемняет фон, но НЕ рисует текст и НЕ делает flip().
+        Используется для внутренних меню (например, "Настройки"), которые не блокируют поток.
+
+        🔧 МОЖНО МЕНЯТЬ:
+        - alpha: 0..255 (чем больше — тем темнее)
+        """
+        nonlocal screen
+        w, h = screen.get_size()
+        overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, int(alpha)))
+        screen.blit(overlay, (0, 0))
+
+    def _call_modal(fn, *args, overlay_text: str = "Открыто окно…", **kwargs):
+        """
+        🧠 ЛОГИКА:
+        Единая обёртка для любых tkinter модалок:
+        1) затемнить+flip
+        2) вызвать модалку (она блокирует поток)
+        3) восстановить фокус pygame
+        """
+        _draw_dim_pause_overlay(overlay_text)
+        result = fn(*args, **kwargs)
+        _restore_pygame_focus()
+        return result
+
     status_message = ""
 
     title_text = "DragonEngine"
@@ -381,9 +527,9 @@ def _run_editor_impl(
     ui_buttons_y = max(UI_TOP_Y, manager_y + font.get_height() + 10)
 
     # ✅ Кнопка "Выход" — ВЕРХНИЙ ПРАВЫЙ УГОЛ (меньше стандартной)
-    EXIT_BTN_W = int(BUTTON_W * 0.72)  # 🔧 МОЖНО МЕНЯТЬ: ширина кнопки "Выход"
-    EXIT_BTN_H = int(BUTTON_H * 0.78)  # 🔧 МОЖНО МЕНЯТЬ: высота кнопки "Выход"
-    EXIT_BTN_MARGIN = 10  # 🔧 МОЖНО МЕНЯТЬ: отступ от краёв
+    EXIT_BTN_W = int(BUTTON_W * 0.72)  # 🔧 МОЖНО МЕНЯТЬ
+    EXIT_BTN_H = int(BUTTON_H * 0.78)  # 🔧 МОЖНО МЕНЯТЬ
+    EXIT_BTN_MARGIN = 10  # 🔧 МОЖНО МЕНЯТЬ
 
     EXIT_BTN_X = win_w - EXIT_BTN_W - EXIT_BTN_MARGIN
     EXIT_BTN_Y = EXIT_BTN_MARGIN
@@ -399,32 +545,24 @@ def _run_editor_impl(
     # ============================================================
     btn_create = pygame.Rect(UI_MARGIN_X, ui_buttons_y, BUTTON_W, BUTTON_H)
     btn_last_project = pygame.Rect(UI_MARGIN_X + BUTTON_W + UI_GAP_X, ui_buttons_y, BUTTON_W, BUTTON_H)
-
-    # ✅ "Открыть проект" — второй ряд
     btn_open_project = pygame.Rect(UI_MARGIN_X, ui_buttons_y + BUTTON_H + UI_GAP_X, BUTTON_W, BUTTON_H)
 
     # ============================================================
     # ✅ Кнопка "Настройки"
-    # - Узкая как "Выход"
-    # - Слева
-    # - По Y на одном уровне с "Выход"
     # ============================================================
-    SETTINGS_BTN_W = int(BUTTON_W * 0.72)  # 🔧 МОЖНО МЕНЯТЬ: ширина (как у кнопки "Выход")
-    SETTINGS_BTN_H = int(BUTTON_H * 0.78)  # 🔧 МОЖНО МЕНЯТЬ: высота (как у кнопки "Выход")
-    SETTINGS_BTN_X = UI_MARGIN_X  # ✅ слева, вровень с "Создать"/"Открыть"
-    SETTINGS_BTN_Y = EXIT_BTN_Y  # ✅ на одном уровне с "Выход"
+    SETTINGS_BTN_W = int(BUTTON_W * 0.72)  # 🔧 МОЖНО МЕНЯТЬ
+    SETTINGS_BTN_H = int(BUTTON_H * 0.78)  # 🔧 МОЖНО МЕНЯТЬ
+    SETTINGS_BTN_X = UI_MARGIN_X
+    SETTINGS_BTN_Y = EXIT_BTN_Y
 
     btn_settings = pygame.Rect(SETTINGS_BTN_X, SETTINGS_BTN_Y, SETTINGS_BTN_W, SETTINGS_BTN_H)
 
     def _update_exit_button() -> None:
-        """🧠 ЛОГИКА: пересчитываем позицию кнопки выхода (правый верх)."""
         nonlocal EXIT_BTN_X, EXIT_BTN_Y
         EXIT_BTN_X = win_w - EXIT_BTN_W - EXIT_BTN_MARGIN
         EXIT_BTN_Y = EXIT_BTN_MARGIN
         btn_exit.x = EXIT_BTN_X
         btn_exit.y = EXIT_BTN_Y
-
-        # ✅ держим "Настройки" на одном уровне с "Выход" по Y
         btn_settings.y = EXIT_BTN_Y
 
     selected_project_index: int | None = None
@@ -510,14 +648,6 @@ def _run_editor_impl(
     # ✅ Запуск сцены + возврат в менеджер
     # ============================================================
     def _launch_scene(scene_path: Path) -> None:
-        """
-        🧠 ЛОГИКА:
-        Запускаем редактор сцены и возвращаемся обратно в менеджер проектов.
-
-        scene_editor возвращает:
-        - "quit" -> пользователь закрыл окно сцены крестиком (закрываем весь движок)
-        - "back" -> пользователь нажал "К проектам" (возвращаемся в менеджер)
-        """
         nonlocal screen, status_message, win_w, win_h, fullscreen
 
         result = run_scene_editor(scene_path, win_w, win_h, fps)
@@ -525,27 +655,34 @@ def _run_editor_impl(
         if result == "quit":
             force_quit(0)
 
-        # ✅ FIX: возвращаем заголовок окна менеджера
         pygame.display.set_caption(window_title)
-
-        # ✅ FIX: возвращаем режим окна менеджера (fullscreen/окно)
         screen, win_w, win_h = _apply_display_mode(bool(engine_settings.get("fullscreen", False)))
         _update_exit_button()
 
-        # ✅ очищаем хвост событий (клики/клавиши из сцены не должны "протекать" в менеджер)
         pygame.event.clear()
         pygame.event.pump()
 
         status_message = "Возврат в менеджер проектов."
 
+    # ============================================================
+    # ✅ ДЕЙСТВИЯ КНОПОК (обёртка modal добавлена)
+    # ============================================================
     def _do_create():
         nonlocal status_message
-        project_location = filedialog.askdirectory(title="Выберите папку для проекта")
-        _restore_pygame_focus()
+
+        project_location = _call_modal(
+            filedialog.askdirectory,
+            title="Выберите папку для проекта",
+            overlay_text="Выбор папки…",
+        )
 
         if project_location:
-            project_name = simpledialog.askstring("Имя проекта", "Введите имя проекта:")
-            _restore_pygame_focus()
+            project_name = _call_modal(
+                simpledialog.askstring,
+                "Имя проекта",
+                "Введите имя проекта:",
+                overlay_text="Ввод имени проекта…",
+            )
 
             if project_name:
                 created = create_project(Path(project_location), project_name)
@@ -577,11 +714,15 @@ def _run_editor_impl(
     def _do_open():
         nonlocal status_message
         print("Клик по кнопке 'Открыть проект'")
-        project_root = open_selected_project()
-        _restore_pygame_focus()
+
+        project_root = _call_modal(
+            filedialog.askdirectory,
+            title="Выберите папку с проектом",
+            overlay_text="Выбор проекта…",
+        )
 
         if project_root:
-            info = open_project_by_path(project_root)
+            info = open_project_by_path(Path(project_root))
             if info is None:
                 status_message = "Ошибка: project.json не найден в выбранной папке."
             else:
@@ -615,16 +756,19 @@ def _run_editor_impl(
         nonlocal status_message, selected_project_index, last_click_index, last_click_time
         if selected_project_index is None:
             return
+
         all_projects_local = list_all_projects()
         if not (0 <= selected_project_index < len(all_projects_local)):
             return
 
         info = all_projects_local[selected_project_index]
-        confirm = messagebox.askyesno(
+
+        confirm = _call_modal(
+            messagebox.askyesno,
             "Удаление проекта",
             f"Удалить проект '{info.name}'?\n\nПапка будет удалена полностью:\n{info.root}",
+            overlay_text="Подтверждение удаления…",
         )
-        _restore_pygame_focus()
 
         if confirm:
             ok = delete_project(info.root)
@@ -640,21 +784,21 @@ def _run_editor_impl(
             status_message = "Удаление отменено."
 
     def _confirm_exit() -> bool:
-        """
-        🧠 ЛОГИКА: единое подтверждение выхода (кнопка и крестик).
-        """
-        confirm_exit = messagebox.askyesno("Выход", "Вы действительно хотите выйти?")
-        _restore_pygame_focus()
+        confirm_exit = _call_modal(
+            messagebox.askyesno,
+            "Выход",
+            "Вы действительно хотите выйти?",
+            overlay_text="Подтверждение выхода…",
+        )
         return bool(confirm_exit)
 
     # ============================================================
     # ✅ UI: вычисление rect панели настроек (единое место)
     # ============================================================
     def _settings_panel_rect() -> pygame.Rect:
-        # 🔧 МОЖНО МЕНЯТЬ: размеры и позиция панели
-        PANEL_W = 280
-        PANEL_H = 96
-        PANEL_MARGIN_Y = 6
+        PANEL_W = 280  # 🔧 МОЖНО МЕНЯТЬ
+        PANEL_H = 96   # 🔧 МОЖНО МЕНЯТЬ
+        PANEL_MARGIN_Y = 6  # 🔧 МОЖНО МЕНЯТЬ
 
         panel_x = btn_settings.x
         panel_y = btn_settings.bottom + PANEL_MARGIN_Y
@@ -668,7 +812,6 @@ def _run_editor_impl(
         clock.tick(fps)
         mouse_pos = pygame.mouse.get_pos()
 
-        # ✅ актуальный размер окна (важно для fullscreen / будущего RESIZABLE)
         win_w, win_h = screen.get_size()
         _update_exit_button()
 
@@ -678,7 +821,6 @@ def _run_editor_impl(
         all_projects = list_all_projects()
 
         for event in pygame.event.get():
-            # ✅ КРЕСТИК ОКНА -> подтверждение -> жёсткий выход
             if event.type == pygame.QUIT:
                 if _confirm_exit():
                     force_quit(0)
@@ -696,7 +838,6 @@ def _run_editor_impl(
                     armed_action = "settings"
                     continue
 
-                # ✅ если меню настроек открыто — клики по UI под ним не должны "протекать"
                 if settings_open:
                     panel_rect = _settings_panel_rect()
                     if panel_rect.collidepoint(pos):
@@ -772,26 +913,22 @@ def _run_editor_impl(
                 elif armed_action == "settings" and btn_settings.collidepoint(pos):
                     settings_open = not settings_open
 
-                # ✅ меню открыто: клики обрабатываем ТОЛЬКО в меню
                 elif settings_open:
                     panel_rect = _settings_panel_rect()
                     checkbox_rect = _settings_checkbox_fullscreen_rect(panel_rect)
 
-                    # клик по чекбоксу
                     if checkbox_rect.collidepoint(pos):
                         engine_settings["fullscreen"] = not bool(engine_settings.get("fullscreen", False))
                         save_settings(engine_settings)
 
                         fullscreen = bool(engine_settings["fullscreen"])
 
-                        # ✅ Пере-применяем режим окна
                         screen, win_w, win_h = _apply_display_mode(fullscreen)
                         _update_exit_button()
 
                         pygame.display.set_caption(window_title)
                         pygame.event.clear()
 
-                    # клик вне меню — закрываем меню (приятный UX)
                     elif not panel_rect.collidepoint(pos) and not btn_settings.collidepoint(pos):
                         settings_open = False
 
@@ -817,10 +954,7 @@ def _run_editor_impl(
         # --- РЕНДЕР ---
         screen.fill(EDITOR_BG_COLOR)
 
-        # ✅ Верхний правый: "Выход"
         _draw_exit_button(screen, font, btn_exit, "Выход", mouse_pos)
-
-        # ✅ Верхний левый: "Настройки" (на одном уровне с "Выход" по Y)
         _draw_button(screen, font, btn_settings, "Настройки", mouse_pos)
 
         title_w = title_font.size(title_text)[0]
@@ -829,7 +963,6 @@ def _run_editor_impl(
 
         screen.blit(font.render("Менеджер проектов:", True, EDITOR_TEXT_COLOR), (UI_MARGIN_X, manager_y))
 
-        # ✅ Кнопки менеджера
         _draw_button(screen, font, btn_create, "Создать проект", mouse_pos)
         _draw_button(screen, font, btn_last_project, "Последний проект", mouse_pos)
         _draw_button(screen, font, btn_open_project, "Открыть проект", mouse_pos)
@@ -847,49 +980,38 @@ def _run_editor_impl(
                     pygame.draw.rect(screen, (40, 40, 46), item_rect)  # 🔧 МОЖНО МЕНЯТЬ
 
                 pygame.draw.rect(screen, BUTTON_BORDER_COLOR, item_rect, 1)
-
                 screen.blit(font.render(p.name, True, EDITOR_TEXT_COLOR), (item_rect.x + 10, item_rect.y + 6))
 
                 y += PROJECT_ITEM_H + PROJECT_ITEM_GAP
         else:
             _draw_lines(screen, font, ["(пока пусто)"], x=PROJECT_LIST_X, y=PROJECT_LIST_Y, color=EDITOR_TEXT_COLOR)
 
-        # ✅ Кнопки для выделенного проекта: "Открыть" (слева) + "Удалить" (справа)
         if selected_project_index is not None and 0 <= selected_project_index < len(all_projects):
             open_sel_rect = _get_open_selected_button_rect(selected_project_index)
             delete_rect = _get_delete_button_rect(selected_project_index)
 
             t = pygame.time.get_ticks() / 1000.0
 
-            # --- Открыть (слева) ---
             pulse_open = (math.sin(t * OPEN_PULSE_SPEED) + 1.0) * 0.5
             open_bg = _blend_color(BUTTON_BG_COLOR, OPEN_PULSE_ADD, pulse_open)
-
             if open_sel_rect.collidepoint(mouse_pos):
                 open_bg = _blend_color(open_bg, (20, 30, 40), 1.0)  # 🔧 МОЖНО МЕНЯТЬ
 
             pygame.draw.rect(screen, open_bg, open_sel_rect)
             pygame.draw.rect(screen, BUTTON_BORDER_COLOR, open_sel_rect, BUTTON_BORDER_WIDTH)
-
             label_open = font.render("Открыть", True, BUTTON_TEXT_COLOR)  # 🔧 МОЖНО МЕНЯТЬ
             screen.blit(label_open, label_open.get_rect(center=open_sel_rect.center))
 
-            # --- Удалить (справа) ---
             pulse_del = (math.sin(t * DELETE_PULSE_SPEED) + 1.0) * 0.5
             del_bg = _blend_color(BUTTON_BG_COLOR, DELETE_PULSE_ADD, pulse_del)
-
             if delete_rect.collidepoint(mouse_pos):
                 del_bg = _blend_color(del_bg, (50, 20, 20), 1.0)  # 🔧 МОЖНО МЕНЯТЬ
 
             pygame.draw.rect(screen, del_bg, delete_rect)
             pygame.draw.rect(screen, BUTTON_BORDER_COLOR, delete_rect, BUTTON_BORDER_WIDTH)
-
             label_del = font.render("Удалить", True, BUTTON_TEXT_COLOR)  # 🔧 МОЖНО МЕНЯТЬ
             screen.blit(label_del, label_del.get_rect(center=delete_rect.center))
 
-        # ============================================================
-        # ✅ НИЖНИЕ СТРОКИ (путь/размер + статус)
-        # ============================================================
         line_h = font.get_height() + 6
         info_lines_count = 0
 
@@ -898,8 +1020,8 @@ def _run_editor_impl(
 
         status_lines_count = 1 if status_message else 0
 
-        status_y = win_h - BOTTOM_SAFE_PAD - (status_lines_count * line_h)  # 🔧 МОЖНО МЕНЯТЬ: нижний отступ
-        info_y = status_y - (STATUS_GAP + (info_lines_count * line_h))  # 🔧 МОЖНО МЕНЯТЬ: зазор между блоками
+        status_y = win_h - BOTTOM_SAFE_PAD - (status_lines_count * line_h)  # 🔧 МОЖНО МЕНЯТЬ
+        info_y = status_y - (STATUS_GAP + (info_lines_count * line_h))  # 🔧 МОЖНО МЕНЯТЬ
 
         if info_lines_count > 0:
             info_lines = [
@@ -912,11 +1034,8 @@ def _run_editor_impl(
         if status_message:
             _draw_lines(screen, font, [status_message], x=UI_MARGIN_X, y=status_y, color=EDITOR_HINT_COLOR)
 
-        # ============================================================
-        # ✅ ВАЖНО: РИСУЕМ МЕНЮ НАСТРОЕК САМЫМ ПОСЛЕДНИМ СЛОЕМ
-        # (чтобы оно было поверх любых элементов интерфейса)
-        # ============================================================
         if settings_open:
+            _draw_dim_overlay_only(alpha=110)  # 🔧 МОЖНО МЕНЯТЬ: степень затемнения
             panel_rect = _settings_panel_rect()
             checkbox_rect = _settings_checkbox_fullscreen_rect(panel_rect)
 
