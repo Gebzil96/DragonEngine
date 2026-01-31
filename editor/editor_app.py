@@ -26,6 +26,7 @@ from config_engine import (
     TITLE_Y,
     TITLE_GAP_Y,
     UI_MARGIN_X,
+    EDGE_PAD,
     UI_TOP_Y,
     UI_GAP_X,
     BUTTON_W,
@@ -417,7 +418,7 @@ def _run_editor_impl(
         USE_BORDERLESS_FULLSCREEN = True  # 🔧 МОЖНО МЕНЯТЬ
 
         # 🔧 МОЖНО МЕНЯТЬ: включать RESIZABLE в оконном режиме (если захочешь)
-        WINDOW_RESIZABLE = False  # 🔧 МОЖНО МЕНЯТЬ
+        WINDOW_RESIZABLE = True  # 🔧 МОЖНО МЕНЯТЬ
 
         if fullscreen_on:
             # ✅ позиция окна (на всякий случай)
@@ -541,7 +542,7 @@ def _run_editor_impl(
     # ✅ Кнопка "Выход" — ВЕРХНИЙ ПРАВЫЙ УГОЛ (меньше стандартной)
     EXIT_BTN_W = int(BUTTON_W * 0.72)  # 🔧 МОЖНО МЕНЯТЬ
     EXIT_BTN_H = int(BUTTON_H * 0.78)  # 🔧 МОЖНО МЕНЯТЬ
-    EXIT_BTN_MARGIN = 10  # 🔧 МОЖНО МЕНЯТЬ
+    EXIT_BTN_MARGIN = EDGE_PAD  # 🔧 МОЖНО МЕНЯТЬ: единый отступ от краёв
 
     EXIT_BTN_X = win_w - EXIT_BTN_W - EXIT_BTN_MARGIN
     EXIT_BTN_Y = EXIT_BTN_MARGIN
@@ -577,7 +578,7 @@ def _run_editor_impl(
     # ============================================================
     SETTINGS_BTN_W = int(BUTTON_W * 0.72)  # 🔧 МОЖНО МЕНЯТЬ
     SETTINGS_BTN_H = int(BUTTON_H * 0.78)  # 🔧 МОЖНО МЕНЯТЬ
-    SETTINGS_BTN_X = UI_MARGIN_X
+    SETTINGS_BTN_X = EDGE_PAD  # 🔧 МОЖНО МЕНЯТЬ: единый отступ от краёв
     SETTINGS_BTN_Y = EXIT_BTN_Y
 
     btn_settings = pygame.Rect(SETTINGS_BTN_X, SETTINGS_BTN_Y, SETTINGS_BTN_W, SETTINGS_BTN_H)
@@ -601,10 +602,39 @@ def _run_editor_impl(
     DOUBLE_CLICK_MS = 350  # 🔧 МОЖНО МЕНЯТЬ
 
     PROJECT_LIST_X = UI_MARGIN_X  # 🔧 МОЖНО МЕНЯТЬ
-    PROJECT_LIST_Y = 240  # 🔧 МОЖНО МЕНЯТЬ
+    PROJECT_LIST_Y = 0  # 🧠 вычисляется динамически ниже
     PROJECT_ITEM_W = 420  # 🔧 МОЖНО МЕНЯТЬ
     PROJECT_ITEM_H = 36  # 🔧 МОЖНО МЕНЯТЬ
     PROJECT_ITEM_GAP = 8  # 🔧 МОЖНО МЕНЯТЬ
+
+    # ============================================================
+    # ✅ UI PANELS (рамочки как у debug overlay)
+    # ============================================================
+    PANEL_PAD_X = 14            # 🔧 МОЖНО МЕНЯТЬ: внутренний отступ панели по X
+    PANEL_PAD_Y = 12            # 🔧 МОЖНО МЕНЯТЬ: внутренний отступ панели по Y
+    PANEL_RADIUS = 10           # 🔧 МОЖНО МЕНЯТЬ: скругление углов
+    PANEL_BG_COLOR = (28, 30, 40)      # 🔧 МОЖНО МЕНЯТЬ: холодный тёмно-синий (отделяет от серых кнопок)
+    PANEL_BG_ALPHA = 235              # 🔧 МОЖНО МЕНЯТЬ: почти непрозрачно → чёткая карточка
+    PANEL_BORDER_COLOR = (170, 180, 220)  # 🔧 МОЖНО МЕНЯТЬ: светлая холодная рамка
+    PANEL_BORDER_W = 1
+    PANELS_GAP_Y = 14  # 🔧 МОЖНО МЕНЯТЬ: расстояние между панелью менеджера и списком
+    PROJECTS_TITLE_OFFSET_Y = 30  # 🔧 МОЖНО МЕНЯТЬ: на сколько заголовок "Проекты:" выше списка
+    PROJECTS_TITLE_TOP_PAD = 6    # 🔧 МОЖНО МЕНЯТЬ: небольшой верхний зазор внутри панели списка
+
+    def _draw_panel(rect: pygame.Rect) -> None:
+        """🧠 ЛОГИКА: рисуем полупрозрачную панель + рамку (как debug overlay)."""
+        overlay = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+        overlay.fill((*PANEL_BG_COLOR, int(PANEL_BG_ALPHA)))
+        screen.blit(overlay, (rect.x, rect.y))
+        pygame.draw.rect(screen, PANEL_BORDER_COLOR, rect, PANEL_BORDER_W, border_radius=PANEL_RADIUS)
+
+    # ✅ Hover-подсветка элемента списка проектов
+    PROJECT_ITEM_BG = (40, 40, 46)          # 🔧 МОЖНО МЕНЯТЬ: обычный фон (у тебя он уже используется)
+    PROJECT_ITEM_SELECTED_BG = (70, 100, 160)  # 🔧 МОЖНО МЕНЯТЬ: выбранный проект (у тебя он уже используется)
+
+    PROJECT_ITEM_HOVER_BG = (55, 55, 70)    # 🔧 МОЖНО МЕНЯТЬ: фон при наведении (hover)
+    PROJECT_ITEM_HOVER_BORDER = (120, 120, 150)  # 🔧 МОЖНО МЕНЯТЬ: обводка hover
+    PROJECT_ITEM_HOVER_BORDER_W = 2         # 🔧 МОЖНО МЕНЯТЬ: толщина обводки
 
     # ✅ Пульсация кнопок
     DELETE_PULSE_SPEED = 3.2  # 🔧 МОЖНО МЕНЯТЬ
@@ -618,6 +648,7 @@ def _run_editor_impl(
     SELECTED_BUTTON_MIN_W = 120  # 🔧 МОЖНО МЕНЯТЬ
     SELECTED_BUTTON_MAX_W = 220  # 🔧 МОЖНО МЕНЯТЬ
     SELECTED_BUTTON_H = 32  # 🔧 МОЖНО МЕНЯТЬ
+    SELECTED_BUTTON_W_SCALE = 0.50  # 🔧 МОЖНО МЕНЯТЬ: 0.5 = в 2 раза короче
 
     BOTTOM_SAFE_PAD = 18  # 🔧 МОЖНО МЕНЯТЬ
     STATUS_GAP = 10  # 🔧 МОЖНО МЕНЯТЬ
@@ -629,6 +660,10 @@ def _run_editor_impl(
         panel_x = _selected_buttons_panel_x()
         available = win_w - panel_x - UI_MARGIN_X
         w = int((available - SELECTED_BUTTON_GAP_X) / 2)
+
+        # ✅ делаем кнопки короче (по запросу — в 2 раза)
+        w = int(w * SELECTED_BUTTON_W_SCALE)
+
         w = max(SELECTED_BUTTON_MIN_W, min(SELECTED_BUTTON_MAX_W, w))
         return w
 
@@ -1067,23 +1102,88 @@ def _run_editor_impl(
         title_x = (win_w - title_w) // 2
         screen.blit(title_font.render(title_text, True, EDITOR_TEXT_COLOR), (title_x, TITLE_Y))
 
+        # ✅ Панель: "Менеджер проектов" + его кнопки
+        mgr_left = UI_MARGIN_X
+        mgr_top = manager_y - 8  # 🔧 МОЖНО МЕНЯТЬ: чуть выше заголовка
+        mgr_right = max(btn_create.right, btn_last_project.right, btn_open_project.right)
+        mgr_bottom = max(btn_create.bottom, btn_last_project.bottom, btn_open_project.bottom)
+
+        mgr_panel = pygame.Rect(
+            mgr_left - PANEL_PAD_X,
+            mgr_top - PANEL_PAD_Y,
+            (mgr_right - mgr_left) + PANEL_PAD_X * 2,
+            (mgr_bottom - mgr_top) + PANEL_PAD_Y * 2,
+        )
+        _draw_panel(mgr_panel)
+
+         # 🧠 ЛОГИКА: учитываем, что панель списка начинается выше PROJECT_LIST_Y из-за заголовка
+        PROJECT_LIST_Y = (
+            mgr_panel.bottom
+            + PANELS_GAP_Y
+            + PROJECTS_TITLE_OFFSET_Y
+            + PROJECTS_TITLE_TOP_PAD
+            + PANEL_PAD_Y
+        )
+
         screen.blit(font.render("Менеджер проектов:", True, EDITOR_TEXT_COLOR), (UI_MARGIN_X, manager_y))
 
         _draw_button(screen, font, btn_create, "Создать проект", mouse_pos)
         _draw_button(screen, font, btn_last_project, "Последний проект", mouse_pos)
         _draw_button(screen, font, btn_open_project, "Открыть проект", mouse_pos)
 
-        screen.blit(font.render("Проекты:", True, EDITOR_TEXT_COLOR), (UI_MARGIN_X, PROJECT_LIST_Y - 30))
+         # ✅ Панель: список проектов (заголовок + список + кнопки справа)
+        list_left = PROJECT_LIST_X
+        list_top = (PROJECT_LIST_Y - PROJECTS_TITLE_OFFSET_Y) - PROJECTS_TITLE_TOP_PAD
+        list_count = max(1, len(all_projects))
+        list_h = list_count * PROJECT_ITEM_H + (list_count - 1) * PROJECT_ITEM_GAP
+
+        # ширина: список + (если есть) зона кнопок выбранного проекта
+        list_right = PROJECT_LIST_X + PROJECT_ITEM_W
+        if selected_project_index is not None and 0 <= selected_project_index < len(all_projects):
+            # включаем правые кнопки в панель
+            list_right = max(list_right, _get_delete_button_rect(selected_project_index).right)
+
+        list_bottom = PROJECT_LIST_Y + list_h
+
+        list_panel = pygame.Rect(
+            list_left - PANEL_PAD_X,
+            list_top - PANEL_PAD_Y,
+            (list_right - list_left) + PANEL_PAD_X * 2,
+            (list_bottom - list_top) + PANEL_PAD_Y * 2,
+        )
+        _draw_panel(list_panel)
+
+        screen.blit(
+            font.render("Проекты:", True, EDITOR_TEXT_COLOR),
+            (UI_MARGIN_X, PROJECT_LIST_Y - PROJECTS_TITLE_OFFSET_Y),
+        )
 
         y = PROJECT_LIST_Y
         if all_projects:
             for i, p in enumerate(all_projects):
                 item_rect = pygame.Rect(PROJECT_LIST_X, y, PROJECT_ITEM_W, PROJECT_ITEM_H)
 
+                # 🧠 ЛОГИКА: hover считается каждый кадр (стабильно, без залипаний)
+                is_hover = item_rect.collidepoint(mouse_pos)
+
+                # 🧠 ЛОГИКА: фон элемента списка
                 if selected_project_index == i:
-                    pygame.draw.rect(screen, (70, 100, 160), item_rect)  # 🔧 МОЖНО МЕНЯТЬ
+                    bg = PROJECT_ITEM_SELECTED_BG
+                elif is_hover:
+                    bg = PROJECT_ITEM_HOVER_BG
                 else:
-                    pygame.draw.rect(screen, (40, 40, 46), item_rect)  # 🔧 МОЖНО МЕНЯТЬ
+                    bg = PROJECT_ITEM_BG
+
+                pygame.draw.rect(screen, bg, item_rect)
+
+                # ✅ обводка hover (чтобы было прям очевидно “куда навёл”)
+                if (selected_project_index != i) and is_hover:
+                    pygame.draw.rect(
+                        screen,
+                        PROJECT_ITEM_HOVER_BORDER,
+                        item_rect,
+                        PROJECT_ITEM_HOVER_BORDER_W,
+                    )
 
                 pygame.draw.rect(screen, BUTTON_BORDER_COLOR, item_rect, 1)
                 screen.blit(font.render(p.name, True, EDITOR_TEXT_COLOR), (item_rect.x + 10, item_rect.y + 6))
