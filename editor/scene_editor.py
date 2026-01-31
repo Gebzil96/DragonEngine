@@ -9,6 +9,7 @@ from engine.config_engine import (  # 🔧 МОЖНО МЕНЯТЬ: цвета �
     FONT_SIZE,
 )
 
+from engine_settings import load_settings, save_settings  # ✅ настройки движка
 
 # ============================================================
 # ✅ ПРОЕКТ: имя проекта по scene_path -> project.json
@@ -232,6 +233,10 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
 
     project_name = _get_project_name_from_scene_path(scene_path)
 
+    engine_settings = load_settings()
+    engine_settings.setdefault("debug_overlay", False)
+    settings_open = False
+
     running = True
     while running:
         clock.tick(fps)
@@ -242,12 +247,43 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
 
         back_btn_rect = _get_back_button_rect(window_width)
 
+        # ====================================================
+        # ✅ новые кнопки сцены
+        # ====================================================
+        BTN_W = 120  # 🔧 МОЖНО МЕНЯТЬ
+        BTN_H = 28   # 🔧 МОЖНО МЕНЯТЬ
+        MARGIN = 10  # 🔧 МОЖНО МЕНЯТЬ
+
+        settings_rect = pygame.Rect(
+            window_width - BTN_W * 2 - MARGIN * 2,
+            MARGIN,
+            BTN_W,
+            BTN_H,
+        )
+
+        exit_rect = pygame.Rect(
+            window_width - BTN_W - MARGIN,
+            MARGIN,
+            BTN_W,
+            BTN_H,
+        )
+
         # --- СОБЫТИЯ ---
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return "quit"
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+
+                 # ✅ Выход из движка
+                if exit_rect.collidepoint(event.pos):
+                    return "quit"
+
+                # ✅ открыть/закрыть настройки
+                if settings_rect.collidepoint(event.pos):
+                    settings_open = not settings_open
+                    continue
+
                 # ✅ Клик по кнопке "К проектам"
                 if back_btn_rect.collidepoint(event.pos):
                     return "back"
@@ -272,10 +308,64 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
         # ✅ Кнопка "К проектам" справа сверху (компактная)
         _draw_back_button(screen, font, mouse_pos, window_width)
 
+         # ==============================
+        # ✅ кнопка Настройки
+        # ==============================
+        pygame.draw.rect(screen, (40,40,46), settings_rect, border_radius=6)
+        pygame.draw.rect(screen, (90,90,100), settings_rect, 1, border_radius=6)
+        label = font.render("Настройки", True, EDITOR_TEXT_COLOR)
+        screen.blit(label, label.get_rect(center=settings_rect.center))
+
+        # ==============================
+        # ✅ кнопка Выход
+        # ==============================
+        pygame.draw.rect(screen, (120,45,45), exit_rect, border_radius=6)
+        pygame.draw.rect(screen, (150,70,70), exit_rect, 1, border_radius=6)
+        label = font.render("Выход", True, EDITOR_TEXT_COLOR)
+        screen.blit(label, label.get_rect(center=exit_rect.center))
+
         draw_entities(screen, scene_data.get("entities", []), font)
 
         if selected_entity:
             handle_entity_move(mouse_pos, selected_entity)
+
+        # ====================================================
+        # ✅ панель настроек сцены
+        # ====================================================
+        if settings_open:
+            panel = pygame.Rect(20, 60, 260, 90)
+
+            pygame.draw.rect(screen, (30,30,36), panel, border_radius=8)
+            pygame.draw.rect(screen, (90,90,100), panel, 1, border_radius=8)
+
+            text = font.render("Debug overlay", True, EDITOR_TEXT_COLOR)
+            screen.blit(text, (panel.x + 40, panel.y + 30))
+
+            checkbox = pygame.Rect(panel.x + 10, panel.y + 30, 20, 20)
+            pygame.draw.rect(screen, (80,80,90), checkbox, 2)
+
+            if engine_settings["debug_overlay"]:
+                pygame.draw.line(screen, (120,220,120), checkbox.topleft, checkbox.bottomright, 3)
+                pygame.draw.line(screen, (120,220,120), checkbox.topright, checkbox.bottomleft, 3)
+
+            # клик по чекбоксу
+            if pygame.mouse.get_pressed()[0] and checkbox.collidepoint(mouse_pos):
+                engine_settings["debug_overlay"] = not engine_settings["debug_overlay"]
+                save_settings(engine_settings)
+                pygame.time.delay(150)
+
+        if engine_settings["debug_overlay"]:
+            dbg = [
+                f"FPS: {clock.get_fps():.1f}",
+                f"Mouse: {mouse_pos}",
+                f"Entities: {len(scene_data.get('entities', []))}",
+            ]
+
+            y = 120
+            for line in dbg:
+                surf = font.render(line, True, (220,220,60))
+                screen.blit(surf, (10, y))
+                y += 20
 
         pygame.display.flip()
 

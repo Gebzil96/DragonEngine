@@ -50,6 +50,17 @@ from editor.scene_editor import run_scene_editor
 
 from engine_settings import load_settings, save_settings  # ✅ глобальные настройки
 
+# ✅ системная телеметрия (CPU/GPU)
+try:
+    import psutil  # type: ignore
+except Exception:
+    psutil = None
+
+try:
+    import pynvml  # type: ignore
+except Exception:
+    pynvml = None
+
 
 # 🧠 ЛОГИКА: tkinter нужен только для диалогов
 root = tk.Tk()
@@ -387,6 +398,7 @@ def _run_editor_impl(
     fps: int,
     projects_dir: Path,
     fullscreen: bool = False,
+    
 ):
     pygame.init()
 
@@ -538,8 +550,21 @@ def _run_editor_impl(
     # ✅ Настройки движка (persisted)
     engine_settings = load_settings()
     engine_settings["fullscreen"] = bool(fullscreen)
+    engine_settings.setdefault("debug_overlay", False)  # ✅ DEBUG-оверлей (persisted)
     settings_open = False
 
+     # ============================================================
+    # ✅ TELEMETRY CACHE (чтобы не дергалось каждый кадр)
+    # ============================================================
+    telemetry_cpu_smooth: float | None = None
+    telemetry_gpu: float | None = None
+    telemetry_vram: float | None = None
+    telemetry_vram_used_gb: float | None = None
+    telemetry_vram_total_gb: float | None = None
+
+    TELEMETRY_UPDATE_MS = 500  # 🔧 МОЖНО МЕНЯТЬ: как часто обновлять значения (мс)
+    CPU_SMOOTH_ALPHA = 0.20    # 🔧 МОЖНО МЕНЯТЬ: 0..1 (меньше = более плавно)
+    last_telemetry_update = 0
     # ============================================================
     # ✅ КНОПКИ МЕНЕДЖЕРА ПРОЕКТОВ
     # ============================================================
@@ -637,6 +662,74 @@ def _run_editor_impl(
 
         size_bytes = _get_dir_size_bytes(root_path)
         selected_project_size_text = _format_bytes(size_bytes)
+    # ============================================================
+    # ✅ DEBUG TELEMETRY: CPU/GPU/VRAM (best-effort)
+    # ============================================================
+
+    _NVML_READY = False
+
+    def _telemetry_init_once() -> None:
+        """🧠 ЛОГИКА: инициализируем NVML один раз (если доступно)."""
+        nonlocal _NVML_READY
+        if _NVML_READY:
+            return
+
+        if pynvml is None:
+            return
+
+        try:
+            pynvml.nvmlInit()
+            _NVML_READY = True
+        except Exception:
+            _NVML_READY = False
+
+
+    def _get_cpu_percent() -> float | None:
+        """🧠 ЛОГИКА: CPU load в процентах (0..100)."""
+        if psutil is None:
+            return None
+        try:
+            # interval=None -> моментальная оценка (psutil сам усредняет между вызовами)
+            return float(psutil.cpu_percent(interval=None))
+        except Exception:
+            return None
+
+
+    def _get_nvidia_gpu_metrics() -> tuple[float | None, float | None, float | None, float | None]:
+        """
+        🧠 ЛОГИКА:
+        Возвращаем:
+        - GPU load (%) 0..100
+        - VRAM used (%) 0..100
+        - VRAM used (GB)
+        - VRAM total (GB)
+
+        Только для NVIDIA (NVML). Если NVML не доступна -> (None, None, None, None)
+        """
+        _telemetry_init_once()
+        if not _NVML_READY or pynvml is None:
+            return (None, None, None, None)
+
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)  # 🔧 МОЖНО МЕНЯТЬ: GPU #0
+            util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+
+            gpu_load = float(util.gpu)  # %
+
+            used = float(mem.used)
+            total = float(mem.total)
+
+            vram_used_pct = (used / total * 100.0) if total > 0 else 0.0
+
+            GB = 1024.0 ** 3
+            used_gb = used / GB
+            total_gb = total / GB
+
+            return (gpu_load, vram_used_pct, used_gb, total_gb)
+        except Exception:
+            return (None, None, None, None)
+
 
     def _clear_selected_project_info() -> None:
         nonlocal selected_project_path_text, selected_project_size_text, selected_project_cached_root
@@ -797,14 +890,19 @@ def _run_editor_impl(
     # ============================================================
     def _settings_panel_rect() -> pygame.Rect:
         PANEL_W = 280  # 🔧 МОЖНО МЕНЯТЬ
-        PANEL_H = 96   # 🔧 МОЖНО МЕНЯТЬ
+        PANEL_H = 140   # 🔧 МОЖНО МЕНЯТЬ
         PANEL_MARGIN_Y = 6  # 🔧 МОЖНО МЕНЯТЬ
 
         panel_x = btn_settings.x
         panel_y = btn_settings.bottom + PANEL_MARGIN_Y
         return pygame.Rect(panel_x, panel_y, PANEL_W, PANEL_H)
 
+    def _settings_checkbox_debug_rect(panel_rect: pygame.Rect) -> pygame.Rect:
+        # ✅ второй чекбокс ниже fullscreen
+        return pygame.Rect(panel_rect.x + 12, panel_rect.y + 80, 20, 20)
+    
     def _settings_checkbox_fullscreen_rect(panel_rect: pygame.Rect) -> pygame.Rect:
+        # ✅ чекбокс полноэкранного режима
         return pygame.Rect(panel_rect.x + 12, panel_rect.y + 44, 20, 20)
 
     running = True
@@ -916,18 +1014,26 @@ def _run_editor_impl(
                 elif settings_open:
                     panel_rect = _settings_panel_rect()
                     checkbox_rect = _settings_checkbox_fullscreen_rect(panel_rect)
+                    debug_rect = _settings_checkbox_debug_rect(panel_rect)
 
                     if checkbox_rect.collidepoint(pos):
                         engine_settings["fullscreen"] = not bool(engine_settings.get("fullscreen", False))
                         save_settings(engine_settings)
 
                         fullscreen = bool(engine_settings["fullscreen"])
-
                         screen, win_w, win_h = _apply_display_mode(fullscreen)
                         _update_exit_button()
 
                         pygame.display.set_caption(window_title)
                         pygame.event.clear()
+
+                    elif debug_rect.collidepoint(pos):
+                        engine_settings["debug_overlay"] = not bool(engine_settings.get("debug_overlay", False))
+                        save_settings(engine_settings)
+                    
+                      # ✅ если включили debug — форсим обновление телеметрии на следующем кадре
+                        if engine_settings.get("debug_overlay", False):
+                            last_telemetry_update = -10_000  # ✅ гарантированный refresh
 
                     elif not panel_rect.collidepoint(pos) and not btn_settings.collidepoint(pos):
                         settings_open = False
@@ -1034,10 +1140,181 @@ def _run_editor_impl(
         if status_message:
             _draw_lines(screen, font, [status_message], x=UI_MARGIN_X, y=status_y, color=EDITOR_HINT_COLOR)
 
+        # ============================================================
+        # ✅ DEBUG-OVERLAY (справа сверху + полупрозрачный фон)
+        # ============================================================
+        if engine_settings.get("debug_overlay", False):
+
+            now_ms = pygame.time.get_ticks()
+
+            # ✅ обновляем телеметрию:
+            # - по таймеру
+            # - ИЛИ если GPU/VRAM ещё не заполнены (иначе будет N/A после toggle)
+            need_refresh = (now_ms - last_telemetry_update >= TELEMETRY_UPDATE_MS)
+            need_refresh = need_refresh or (telemetry_gpu is None) or (telemetry_vram is None)
+
+            if need_refresh:
+                last_telemetry_update = now_ms
+
+                cpu_raw = _get_cpu_percent()
+                # ====================================================
+                # ✅ CPU smoothing (EMA) — фикс дерганья
+                # ====================================================
+                if cpu_raw is not None:
+                    if telemetry_cpu_smooth is None:
+                        telemetry_cpu_smooth = float(cpu_raw)
+                    else:
+                        telemetry_cpu_smooth = (
+                            telemetry_cpu_smooth * (1.0 - CPU_SMOOTH_ALPHA)
+                            + float(cpu_raw) * CPU_SMOOTH_ALPHA
+                        )
+                gpu_raw, vram_pct_raw, vram_used_gb_raw, vram_total_gb_raw = _get_nvidia_gpu_metrics()
+
+                # --- GPU/VRAM cache update ---
+                if gpu_raw is not None:
+                    telemetry_gpu = gpu_raw
+
+                if vram_pct_raw is not None:
+                    telemetry_vram = vram_pct_raw
+
+                if vram_used_gb_raw is not None:
+                    telemetry_vram_used_gb = vram_used_gb_raw
+
+                if vram_total_gb_raw is not None:
+                    telemetry_vram_total_gb = vram_total_gb_raw
+
+
+            def _fmt_pct(v: float | None) -> str:
+                return "N/A" if v is None else f"{v:.0f}%"
+
+            vram_suffix = ""
+            if telemetry_vram_used_gb is not None and telemetry_vram_total_gb is not None:
+                vram_suffix = f" ({telemetry_vram_used_gb:.1f} / {telemetry_vram_total_gb:.1f} GB)"
+
+            fps_now = clock.get_fps()
+
+            dbg = [
+                f"FPS: {fps_now:.0f}",
+                f"CPU load: {_fmt_pct(telemetry_cpu_smooth)}",
+                f"GPU load: {_fmt_pct(telemetry_gpu)}",
+                f"VRAM used: {_fmt_pct(telemetry_vram)}{vram_suffix}",
+            ]
+
+             # ====================================================
+            # ✅ Цветовые индикаторы (green/orange/red)
+            # ====================================================
+
+            # 🔧 МОЖНО МЕНЯТЬ: пороги для процентов
+            OK_PCT = 50.0        # <= ok
+            WARN_PCT = 80.0      # <= warn, > warn = bad
+
+            # 🔧 МОЖНО МЕНЯТЬ: пороги для FPS относительно target fps
+            OK_FPS_RATIO = 0.90   # >= 90% от target = ok
+            WARN_FPS_RATIO = 0.60 # >= 60% = warn, ниже = bad
+
+            COLOR_OK = (120, 220, 120)     # зелёный
+            COLOR_WARN = (255, 170, 60)    # оранжевый
+            COLOR_BAD = (235, 80, 80)      # красный
+            COLOR_NA = (160, 160, 170)     # N/A
+
+            def _grade_pct(p: float | None) -> tuple[int, int, int]:
+                if p is None:
+                    return COLOR_NA
+                if p <= OK_PCT:
+                    return COLOR_OK
+                if p <= WARN_PCT:
+                    return COLOR_WARN
+                return COLOR_BAD
+
+            def _grade_fps(cur_fps: float) -> tuple[int, int, int]:
+                # target fps = переменная fps из параметров _run_editor_impl
+                target = float(fps) if fps else 60.0
+                ratio = cur_fps / target if target > 0 else 1.0
+                if ratio >= OK_FPS_RATIO:
+                    return COLOR_OK
+                if ratio >= WARN_FPS_RATIO:
+                    return COLOR_WARN
+                return COLOR_BAD
+
+            # ------------------------------------------------
+            # 🔧 НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ
+            # ------------------------------------------------
+            PAD_X = 10        # внутренние отступы
+            PAD_Y = 6
+            LINE_GAP = 4
+            BG_ALPHA = 140    # 0..255 прозрачность
+            BG_COLOR = (20, 20, 24)
+            RADIUS = 8
+            TEXT_COLOR = (230, 230, 90)
+
+            # ------------------------------------------------
+            # считаем размеры текста (с учётом индикатора)
+            # ------------------------------------------------
+            IND_SIZE = 10  # 🔧 МОЖНО МЕНЯТЬ: размер квадратика
+            IND_GAP = 8    # 🔧 МОЖНО МЕНЯТЬ: зазор между квадратиком и текстом
+
+            # Цвет индикатора для каждой строки
+            line_colors: list[tuple[int, int, int]] = [
+                _grade_fps(fps_now),                 # FPS
+                _grade_pct(telemetry_cpu_smooth),    # CPU
+                _grade_pct(telemetry_gpu),           # GPU
+                _grade_pct(telemetry_vram),          # VRAM %
+            ]
+
+            surfaces = [font.render(t, True, TEXT_COLOR) for t in dbg]
+
+            max_text_w = max(s.get_width() for s in surfaces)
+            max_w = IND_SIZE + IND_GAP + max_text_w
+            total_h = sum(s.get_height() for s in surfaces) + LINE_GAP * (len(surfaces) - 1)
+
+            box_w = max_w + PAD_X * 2
+            box_h = total_h + PAD_Y * 2
+
+            # ------------------------------------------------
+            # позиция: под кнопкой "Выход"
+            # ------------------------------------------------
+            box_x = btn_exit.right - box_w
+            box_y = btn_exit.bottom + 8
+
+            # ------------------------------------------------
+            # рисуем полупрозрачный фон
+            # ------------------------------------------------
+            overlay = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+            overlay.fill((*BG_COLOR, BG_ALPHA))
+            screen.blit(overlay, (box_x, box_y))
+
+            pygame.draw.rect(
+                screen,
+                (80, 80, 95),
+                (box_x, box_y, box_w, box_h),
+                1,
+                border_radius=RADIUS,
+            )
+
+            # ------------------------------------------------
+            # рисуем индикатор + текст
+            # ------------------------------------------------
+            y = box_y + PAD_Y
+            for i, surf in enumerate(surfaces):
+                # индикатор
+                c = line_colors[i] if i < len(line_colors) else COLOR_NA
+                ind_x = box_x + PAD_X
+                ind_y = y + (surf.get_height() - IND_SIZE) // 2
+                pygame.draw.rect(screen, c, (ind_x, ind_y, IND_SIZE, IND_SIZE), border_radius=2)
+
+                # текст
+                text_x = ind_x + IND_SIZE + IND_GAP
+                screen.blit(surf, (text_x, y))
+
+                y += surf.get_height() + LINE_GAP
+
+
+
         if settings_open:
             _draw_dim_overlay_only(alpha=110)  # 🔧 МОЖНО МЕНЯТЬ: степень затемнения
             panel_rect = _settings_panel_rect()
             checkbox_rect = _settings_checkbox_fullscreen_rect(panel_rect)
+            debug_rect = _settings_checkbox_debug_rect(panel_rect)
 
             pygame.draw.rect(screen, (32, 32, 42), panel_rect)  # 🔧 МОЖНО МЕНЯТЬ
             pygame.draw.rect(screen, BUTTON_BORDER_COLOR, panel_rect, 2)
@@ -1055,6 +1332,15 @@ def _run_editor_impl(
 
             label = font.render("Полноэкранный режим", True, EDITOR_TEXT_COLOR)
             screen.blit(label, (checkbox_rect.right + 10, checkbox_rect.y - 2))
+
+            # --- Debug overlay ---
+            pygame.draw.rect(screen, (50, 50, 70), debug_rect, 2)  # 🔧 МОЖНО МЕНЯТЬ
+            if engine_settings.get("debug_overlay", False):
+                pygame.draw.line(screen, (120, 220, 120), debug_rect.topleft, debug_rect.bottomright, 3)
+                pygame.draw.line(screen, (120, 220, 120), debug_rect.topright, debug_rect.bottomleft, 3)
+
+            label2 = font.render("Отладочная информация", True, EDITOR_TEXT_COLOR)
+            screen.blit(label2, (debug_rect.right + 10, debug_rect.y - 2))
 
         pygame.display.flip()
 
