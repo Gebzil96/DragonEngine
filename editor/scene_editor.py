@@ -2,6 +2,21 @@ import os  # ✅ фиксация позиции окна SDL
 import sys  # ✅ win32 check
 import ctypes  # ✅ WinAPI: стиль окна
 from ctypes import wintypes  # ✅ типы WinAPI
+
+import time  # ✅ нужно для восстановления фокуса после модалок
+
+# ============================================================
+# ✅ tkinter (модальные окна подтверждения)
+# ============================================================
+try:
+    import tkinter as tk
+    from tkinter import messagebox
+    _TK_OK = True
+except Exception:
+    tk = None
+    messagebox = None
+    _TK_OK = False
+
 import json  # 🧠 ЛОГИКА: загрузка/сохранение сцены
 from pathlib import Path  # 🧠 ЛОГИКА: пути
 
@@ -113,6 +128,94 @@ def _fmt_gb(x: float | None) -> str:
 
 
 import pygame  # 🧠 ЛОГИКА: рендер/события
+
+# ============================================================
+# ✅ ЖЁСТКИЙ ФИКС ФОКУСА ДЛЯ WINDOWS (как в менеджере проектов)
+# ============================================================
+_user32 = ctypes.windll.user32
+_SW_RESTORE = 9  # 🔧 МОЖНО МЕНЯТЬ: обычно не трогаем
+
+def _restore_pygame_focus(timeout_sec: float = 1.5) -> None:
+    """
+    🧠 ЛОГИКА:
+    После tkinter-диалогов Windows может не вернуть фокус pygame-окну.
+    Тогда первый клик “активирует окно”, второй — настоящий.
+    """
+    pygame.event.clear()
+    pygame.event.pump()
+
+    try:
+        wm = pygame.display.get_wm_info()
+        hwnd_raw = wm.get("window", None)
+    except Exception:
+        hwnd_raw = None
+
+    if hwnd_raw:
+        hwnd = wintypes.HWND(hwnd_raw)
+
+        fg = None
+        fg_thread = None
+        this_thread = None
+
+        try:
+            fg = _user32.GetForegroundWindow()
+            fg_thread = _user32.GetWindowThreadProcessId(fg, None)
+            this_thread = _user32.GetWindowThreadProcessId(hwnd, None)
+
+            if fg_thread != this_thread:
+                _user32.AttachThreadInput(fg_thread, this_thread, True)
+
+            # ✅ ВАЖНО: SW_RESTORE может сбрасывать maximized → окно “усыхает”.
+            # Поэтому аккуратно выбираем режим показа.
+            SW_MAXIMIZE = 3
+            SW_SHOW = 5
+
+            try:
+                _user32.IsIconic.argtypes = [wintypes.HWND]
+                _user32.IsIconic.restype = wintypes.BOOL
+                _user32.IsZoomed.argtypes = [wintypes.HWND]
+                _user32.IsZoomed.restype = wintypes.BOOL
+
+                was_minimized = bool(_user32.IsIconic(hwnd))
+                was_maximized = bool(_user32.IsZoomed(hwnd))
+
+                if was_minimized:
+                    _user32.ShowWindow(hwnd, _SW_RESTORE)
+                elif was_maximized:
+                    _user32.ShowWindow(hwnd, SW_MAXIMIZE)
+                else:
+                    _user32.ShowWindow(hwnd, SW_SHOW)
+            except Exception:
+                _user32.ShowWindow(hwnd, _SW_RESTORE)
+
+            _user32.BringWindowToTop(hwnd)
+            _user32.SetActiveWindow(hwnd)
+            _user32.SetForegroundWindow(hwnd)
+            _user32.SetFocus(hwnd)
+
+        finally:
+            try:
+                if fg_thread is not None and this_thread is not None and fg_thread != this_thread:
+                    _user32.AttachThreadInput(fg_thread, this_thread, False)
+            except Exception:
+                pass
+
+    t0 = time.perf_counter()
+    while not pygame.key.get_focused():
+        pygame.event.pump()
+        if time.perf_counter() - t0 > timeout_sec:
+            break
+        pygame.time.delay(10)
+
+    t1 = time.perf_counter()
+    while pygame.mouse.get_pressed(num_buttons=3)[0]:
+        pygame.event.pump()
+        if time.perf_counter() - t1 > 0.8:  # 🔧 МОЖНО МЕНЯТЬ
+            break
+        pygame.time.delay(10)
+
+    pygame.event.clear()
+    pygame.event.pump()
 
 # ============================================================
 # ✅ Импорты конфига (поддерживаем оба варианта: engine.config_engine и config_engine)
@@ -344,9 +447,6 @@ def _apply_display_mode(
     WINDOW_RESIZABLE = True           # 🔧 МОЖНО МЕНЯТЬ
 
     if fullscreen_on:
-        os.environ["SDL_VIDEO_CENTERED"] = "0"
-        os.environ["SDL_VIDEO_WINDOW_POS"] = "0,0"
-
         try:
             pygame.display.quit()
         except Exception:
@@ -443,12 +543,63 @@ def handle_entity_move(mouse_pos, selected_entity):
         selected_entity["x"], selected_entity["y"] = mouse_pos
 
 
-def _draw_project_badge(screen, font, project_name: str) -> None:
-    """🧠 ЛОГИКА: бейдж проекта слева сверху."""
-    x = 10  # 🔧 МОЖНО МЕНЯТЬ
-    y = 10  # 🔧 МОЖНО МЕНЯТЬ
-    surf = font.render(f"Проект: {project_name}", True, EDITOR_TEXT_COLOR)
-    screen.blit(surf, (x, y))
+def _draw_project_badge(
+    screen: pygame.Surface,
+    font: pygame.font.Font,
+    project_name: str,
+    settings_rect: pygame.Rect,
+) -> None:
+    """🧠 ЛОГИКА: бейдж проекта слева сверху (в рамочке) + выравнивание по кнопке 'Настройки'."""
+    # ----------------
+    # 🔧 МОЖНО МЕНЯТЬ
+    # ----------------
+    BADGE_PAD_X = 10
+    BADGE_PAD_Y = 4
+    BADGE_RADIUS = 9
+
+    text = f"Проект: {project_name}"
+
+    # 🔧 МОЖНО МЕНЯТЬ: коэффициент уменьшения шрифта (0.80–0.92 обычно приятно)
+    BADGE_FONT_SCALE = 1
+    badge_font = pygame.font.Font(None, max(12, int(font.get_height() * BADGE_FONT_SCALE)))
+
+    surf = badge_font.render(text, True, EDITOR_TEXT_COLOR)
+
+    badge_w = surf.get_width() + BADGE_PAD_X * 2
+    badge_h = surf.get_height() + BADGE_PAD_Y * 2
+
+    # ----------------
+    # 🔧 МОЖНО МЕНЯТЬ
+    # ----------------
+    BADGE_GAP_ABOVE_BTN = 14  # 🔧 МОЖНО МЕНЯТЬ: больше = выше
+
+    # ✅ В одну вертикаль с кнопкой (по левому краю)
+    badge_x = settings_rect.x
+    badge_y = settings_rect.y - BADGE_GAP_ABOVE_BTN - badge_h
+
+    # ✅ Кламп по экрану (чтобы не уезжал за края)
+    badge_x = max(10, min(badge_x, screen.get_width() - badge_w - 10))
+    badge_y = max(10, badge_y)
+
+    badge_rect = pygame.Rect(badge_x, badge_y, badge_w, badge_h)
+
+    # карточка/рамка в стиле панелей (как в менеджере)
+    overlay = pygame.Surface((badge_rect.width, badge_rect.height), pygame.SRCALPHA)
+    overlay.fill((*PANEL_BG_COLOR, int(PANEL_BG_ALPHA)))
+    screen.blit(overlay, (badge_rect.x, badge_rect.y))
+
+    pygame.draw.rect(
+        screen,
+        PANEL_BORDER_COLOR,
+        badge_rect,
+        PANEL_BORDER_W,
+        border_radius=BADGE_RADIUS,
+    )
+
+    # текст внутри
+    text_x = badge_rect.x + BADGE_PAD_X
+    text_y = badge_rect.y + (badge_rect.height - surf.get_height()) // 2
+    screen.blit(surf, (text_x, text_y))
 
 
 def _draw_button(screen, font, rect, text, mouse_pos):
@@ -606,6 +757,80 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
         except Exception:
             return
 
+    # ============================================================
+    # ✅ Выход с подтверждением (как в менеджере проектов)
+    # ============================================================
+    _tk_root = None
+    if _TK_OK:
+        try:
+            _tk_root = tk.Tk()
+            _tk_root.withdraw()
+        except Exception:
+            _tk_root = None
+
+    def _draw_dim_pause_overlay(text_overlay: str = "Открыто окно…", alpha: int = 150) -> None:
+        """🧠 ЛОГИКА: затемняем сцену перед модалкой, чтобы было понятно что 'пауза'."""
+        w, h = screen.get_size()
+        overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, int(alpha)))
+        screen.blit(overlay, (0, 0))
+
+        TEXT_COLOR = (235, 235, 245)  # 🔧 МОЖНО МЕНЯТЬ
+        SUB_COLOR = (170, 170, 185)   # 🔧 МОЖНО МЕНЯТЬ
+
+        big = pygame.font.SysFont(None, int(DEFAULT_FONT_SIZE * 1.15))   # 🔧 МОЖНО МЕНЯТЬ
+        small = pygame.font.SysFont(None, int(DEFAULT_FONT_SIZE * 0.92)) # 🔧 МОЖНО МЕНЯТЬ
+
+        line1 = big.render(text_overlay, True, TEXT_COLOR)
+        line2 = small.render("Движок на паузе, пока вы не закроете это окно", True, SUB_COLOR)
+
+        cx, cy = w // 2, h // 2
+        screen.blit(line1, line1.get_rect(center=(cx, cy - 10)))
+        screen.blit(line2, line2.get_rect(center=(cx, cy + 22)))
+
+        pygame.display.flip()
+
+    def _call_modal(fn, *args, overlay_text: str = "Открыто окно…", **kwargs):
+        """🧠 ЛОГИКА: dim+flip -> modal -> restore focus."""
+        _draw_dim_pause_overlay(overlay_text)
+        result = fn(*args, **kwargs)
+        _restore_pygame_focus()
+        return result
+
+    def _confirm_back_to_projects() -> bool:
+        """🧠 ЛОГИКА: предупреждаем о потере несохранённых изменений."""
+        if not _TK_OK or messagebox is None:
+            return True
+        try:
+            return bool(
+                _call_modal(
+                    messagebox.askyesno,
+                    "Возврат к проектам",
+                    "Все несохраненные изменения будут утеряны, перейти к списку проектов?",
+                    overlay_text="Подтверждение перехода…",
+                )
+            )
+        except Exception:
+            return True
+
+
+    def _confirm_exit_scene_editor() -> bool:
+        """🧠 ЛОГИКА: спрашиваем подтверждение выхода из редактора сцены."""
+        if not _TK_OK or messagebox is None:
+            return True
+        try:
+            return bool(
+                _call_modal(
+                    messagebox.askyesno,
+                    "Выход",
+                    "Вы действительно хотите выйти?",
+                    overlay_text="Подтверждение выхода…",
+                )
+            )
+        except Exception:
+            return True
+
+
     running = True
     while running:
         clock.tick(fps)
@@ -675,18 +900,24 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
         # ---------------- Events ----------------
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                _persist_window_state_now()
-                return "quit"
+                if _confirm_exit_scene_editor():
+                    _persist_window_state_now()
+                    return "quit"
+                continue
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 # верхние кнопки
                 if exit_rect.collidepoint(event.pos):
-                    _persist_window_state_now()
-                    return "quit"
+                    if _confirm_exit_scene_editor():
+                        _persist_window_state_now()
+                        return "quit"
+                    continue
 
                 if back_rect.collidepoint(event.pos) and not settings_open:
-                    _persist_window_state_now()
-                    return "back"
+                    if _confirm_back_to_projects():
+                        _persist_window_state_now()
+                        return "back"
+                    continue
 
                 if settings_rect.collidepoint(event.pos):
                     settings_open = not settings_open
@@ -745,7 +976,7 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
             dim.fill((0, 0, 0, DIM_ALPHA))
             screen.blit(dim, (0, 0))
 
-        _draw_project_badge(screen, font, project_name)
+        _draw_project_badge(screen, font, project_name, settings_rect)
 
         _draw_button(screen, font, settings_rect, "Настройки", mouse_pos)
         _draw_button(screen, font, back_rect, "К проектам", mouse_pos)

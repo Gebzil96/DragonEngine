@@ -459,7 +459,30 @@ def _restore_pygame_focus(timeout_sec: float = 1.5) -> None:
             if fg_thread != this_thread:
                 _user32.AttachThreadInput(fg_thread, this_thread, True)
 
-            _user32.ShowWindow(hwnd, _SW_RESTORE)
+            # ✅ ВАЖНО: SW_RESTORE может сбрасывать maximized → окно “усыхает”.
+            # Поэтому аккуратно выбираем режим показа.
+            SW_MAXIMIZE = 3
+            SW_SHOW = 5
+
+            try:
+                _user32.IsIconic.argtypes = [wintypes.HWND]
+                _user32.IsIconic.restype = wintypes.BOOL
+                _user32.IsZoomed.argtypes = [wintypes.HWND]
+                _user32.IsZoomed.restype = wintypes.BOOL
+
+                was_minimized = bool(_user32.IsIconic(hwnd))
+                was_maximized = bool(_user32.IsZoomed(hwnd))
+
+                if was_minimized:
+                    _user32.ShowWindow(hwnd, _SW_RESTORE)
+                elif was_maximized:
+                    _user32.ShowWindow(hwnd, SW_MAXIMIZE)
+                else:
+                    _user32.ShowWindow(hwnd, SW_SHOW)
+            except Exception:
+                # fallback: старое поведение (на всякий случай)
+                _user32.ShowWindow(hwnd, _SW_RESTORE)
+
             _user32.BringWindowToTop(hwnd)
             _user32.SetActiveWindow(hwnd)
             _user32.SetForegroundWindow(hwnd)
@@ -589,9 +612,6 @@ def _run_editor_impl(
 
         # ✅ вернуть рамку/заголовок после NOFRAME (Windows)
         _win_force_windowed_decorations()
-
-        # ✅ после смены стиля Windows может "чуть сдвинуть/пересчитать" — добиваем внешние размеры
-        _win_force_window_rect(0, 0, target_w, target_h)
 
         w, h = local_screen.get_size()
         return local_screen, w, h
