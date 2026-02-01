@@ -53,17 +53,23 @@ def _get_cpu_percent() -> float | None:
 
 def _get_ram_metrics() -> tuple[float | None, float | None, float | None]:
     """
-    🧠 ЛОГИКА: RAM -> (percent, used_gb, total_gb)
+    🧠 ЛОГИКА:
+    Возвращаем:
+    - RAM used (GB)
+    - RAM total (GB)
+    - RAM used (%)
     """
     if not _PSUTIL_OK:
-        return None, None, None
+        return (None, None, None)
     try:
         vm = psutil.virtual_memory()
-        used_gb = vm.used / (1024 ** 3)
-        total_gb = vm.total / (1024 ** 3)
-        return float(vm.percent), float(used_gb), float(total_gb)
+        GB = 1024.0 ** 3
+        used_gb = float(vm.used) / GB
+        total_gb = float(vm.total) / GB
+        pct = float(vm.percent)
+        return (used_gb, total_gb, pct)
     except Exception:
-        return None, None, None
+        return (None, None, None)
 
 
 _NVML_INITIALIZED = False
@@ -728,6 +734,10 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
     telemetry_vram = None
     telemetry_vram_used_gb = None
     telemetry_vram_total_gb = None
+    telemetry_ram_used_gb = None
+    telemetry_ram_total_gb = None
+    telemetry_ram_pct = None
+    telemetry_frame_ms_smooth = None
 
     # ✅ как часто сохранять состояние окна (размер/maximize)
     WINDOW_STATE_SAVE_MS = 800  # 🔧 МОЖНО МЕНЯТЬ
@@ -1047,6 +1057,15 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
                     telemetry_vram_used_gb = vram_used_gb_raw
                 if vram_total_gb_raw is not None:
                     telemetry_vram_total_gb = vram_total_gb_raw
+                ram_used_gb_raw, ram_total_gb_raw, ram_pct_raw = _get_ram_metrics()
+
+                if ram_used_gb_raw is not None:
+                    telemetry_ram_used_gb = ram_used_gb_raw
+                if ram_total_gb_raw is not None:
+                    telemetry_ram_total_gb = ram_total_gb_raw
+                if ram_pct_raw is not None:
+                    telemetry_ram_pct = ram_pct_raw
+
 
             def _fmt_pct(v: float | None) -> str:
                 return "N/A" if v is None else f"{v:.0f}%"
@@ -1055,15 +1074,32 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
             if telemetry_vram_used_gb is not None and telemetry_vram_total_gb is not None:
                 vram_suffix = f" ({telemetry_vram_used_gb:.1f} / {telemetry_vram_total_gb:.1f} GB)"
 
+            ram_suffix = ""
+            if telemetry_ram_used_gb is not None and telemetry_ram_total_gb is not None:
+                ram_pct_txt = "N/A" if telemetry_ram_pct is None else f"{telemetry_ram_pct:.0f}%"
+                ram_suffix = f"{telemetry_ram_used_gb:.1f} / {telemetry_ram_total_gb:.1f} GB ({ram_pct_txt})"
+
             fps_now = clock.get_fps()
+            frame_ms = float(clock.get_time())
+
+            # 🧠 ЛОГИКА: сглаживаем frametime, иначе цифры слишком "дрожат"
+            FRAME_MS_EMA_ALPHA = 0.12  # 🔧 МОЖНО МЕНЯТЬ: меньше = стабильнее, больше = быстрее реагирует
+
+            if telemetry_frame_ms_smooth is None:
+                telemetry_frame_ms_smooth = frame_ms
+            else:
+                telemetry_frame_ms_smooth = (
+                    telemetry_frame_ms_smooth * (1.0 - FRAME_MS_EMA_ALPHA) + frame_ms * FRAME_MS_EMA_ALPHA
+                )
 
             dbg = [
                 f"FPS: {fps_now:.0f}",
+                f"Frame time: {(telemetry_frame_ms_smooth if telemetry_frame_ms_smooth is not None else frame_ms):.1f} ms",
                 f"CPU load: {_fmt_pct(telemetry_cpu_smooth)}",
                 f"GPU load: {_fmt_pct(telemetry_gpu)}",
                 f"VRAM used: {_fmt_pct(telemetry_vram)}{vram_suffix}",
+                f"RAM used: {ram_suffix if ram_suffix else 'N/A'}",
             ]
-
             # ====================================================
             # ✅ Цветовые индикаторы (green/orange/red) — 1:1
             # ====================================================
@@ -1077,6 +1113,7 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
             COLOR_WARN = (255, 170, 60)
             COLOR_BAD = (235, 80, 80)
             COLOR_NA = (160, 160, 170)
+            COLOR_TEXT_DIM = COLOR_NA
 
             def _grade_pct(p: float | None) -> tuple[int, int, int]:
                 if p is None:
@@ -1096,6 +1133,23 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
                     return COLOR_WARN
                 return COLOR_BAD
 
+            def _grade_frame_ms(ms: float | None) -> tuple[int, int, int]:
+                """
+                🧠 ЛОГИКА (пороговые значения):
+                <= 18 ms  → зелёный
+                <= 33 ms  → оранжевый
+                > 33 ms   → красный
+                """
+                if ms is None:
+                    return COLOR_TEXT_DIM
+
+                if ms <= 18:
+                    return COLOR_OK
+                if ms <= 33:
+                    return COLOR_WARN
+                return COLOR_BAD
+
+
             # ------------------------------------------------
             # 🔧 НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ — 1:1 как в менеджере
             # ------------------------------------------------
@@ -1111,11 +1165,14 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
             IND_GAP = 8    # 🔧 МОЖНО МЕНЯТЬ
 
             line_colors: list[tuple[int, int, int]] = [
-                _grade_fps(fps_now),              # FPS
-                _grade_pct(telemetry_cpu_smooth), # CPU
-                _grade_pct(telemetry_gpu),        # GPU
-                _grade_pct(telemetry_vram),       # VRAM
+                _grade_fps(fps_now),                         # FPS
+                _grade_frame_ms(telemetry_frame_ms_smooth),  # ms
+                _grade_pct(telemetry_cpu_smooth),            # CPU
+                _grade_pct(telemetry_gpu),                   # GPU
+                _grade_pct(telemetry_vram),                  # VRAM
+                _grade_pct(telemetry_ram_pct),               # RAM
             ]
+
 
             surfaces = [font.render(t, True, TEXT_COLOR) for t in dbg]
 

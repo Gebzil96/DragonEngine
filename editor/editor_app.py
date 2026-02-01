@@ -763,6 +763,10 @@ def _run_editor_impl(
     telemetry_vram: float | None = None
     telemetry_vram_used_gb: float | None = None
     telemetry_vram_total_gb: float | None = None
+    telemetry_ram_used_gb: float | None = None
+    telemetry_ram_total_gb: float | None = None
+    telemetry_ram_pct: float | None = None
+    telemetry_frame_ms_smooth: float | None = None
 
     TELEMETRY_UPDATE_MS = 500  # 🔧 МОЖНО МЕНЯТЬ: как часто обновлять значения (мс)
     CPU_SMOOTH_ALPHA = 0.20    # 🔧 МОЖНО МЕНЯТЬ: 0..1 (меньше = более плавно)
@@ -918,7 +922,27 @@ def _run_editor_impl(
             _NVML_READY = True
         except Exception:
             _NVML_READY = False
+    
+    def _get_ram_metrics() -> tuple[float | None, float | None, float | None]:
+        """
+        🧠 ЛОГИКА:
+        Возвращаем:
+        - RAM used (GB)
+        - RAM total (GB)
+        - RAM used (%)
+        """
+        if psutil is None:
+            return (None, None, None)
 
+        try:
+            vm = psutil.virtual_memory()
+            GB = 1024.0 ** 3
+            used_gb = float(vm.used) / GB
+            total_gb = float(vm.total) / GB
+            pct = float(vm.percent)
+            return (used_gb, total_gb, pct)
+        except Exception:
+            return (None, None, None)
 
     def _get_cpu_percent() -> float | None:
         """🧠 ЛОГИКА: CPU load в процентах (0..100)."""
@@ -1554,6 +1578,15 @@ def _run_editor_impl(
                         )
                 gpu_raw, vram_pct_raw, vram_used_gb_raw, vram_total_gb_raw = _get_nvidia_gpu_metrics()
 
+                ram_used_gb_raw, ram_total_gb_raw, ram_pct_raw = _get_ram_metrics()
+
+                if ram_used_gb_raw is not None:
+                    telemetry_ram_used_gb = ram_used_gb_raw
+                if ram_total_gb_raw is not None:
+                    telemetry_ram_total_gb = ram_total_gb_raw
+                if ram_pct_raw is not None:
+                    telemetry_ram_pct = ram_pct_raw
+
                 # --- GPU/VRAM cache update ---
                 if gpu_raw is not None:
                     telemetry_gpu = gpu_raw
@@ -1574,14 +1607,31 @@ def _run_editor_impl(
             vram_suffix = ""
             if telemetry_vram_used_gb is not None and telemetry_vram_total_gb is not None:
                 vram_suffix = f" ({telemetry_vram_used_gb:.1f} / {telemetry_vram_total_gb:.1f} GB)"
+            
+            ram_suffix = ""
+            if telemetry_ram_used_gb is not None and telemetry_ram_total_gb is not None:
+                ram_pct_txt = "N/A" if telemetry_ram_pct is None else f"{telemetry_ram_pct:.0f}%"
+                ram_suffix = f"{telemetry_ram_used_gb:.1f} / {telemetry_ram_total_gb:.1f} GB ({ram_pct_txt})"
 
             fps_now = clock.get_fps()
+            frame_ms = float(clock.get_time())
+
+            # 🧠 ЛОГИКА: сглаживаем frametime, иначе цифры слишком "дрожат"
+            FRAME_MS_EMA_ALPHA = 0.12  # 🔧 МОЖНО МЕНЯТЬ: меньше = стабильнее, больше = быстрее реагирует
+            if telemetry_frame_ms_smooth is None:
+                telemetry_frame_ms_smooth = frame_ms
+            else:
+                telemetry_frame_ms_smooth = (
+                    telemetry_frame_ms_smooth * (1.0 - FRAME_MS_EMA_ALPHA) + frame_ms * FRAME_MS_EMA_ALPHA
+                )
 
             dbg = [
                 f"FPS: {fps_now:.0f}",
+                f"Frame time: {(telemetry_frame_ms_smooth if telemetry_frame_ms_smooth is not None else frame_ms):.1f} ms",
                 f"CPU load: {_fmt_pct(telemetry_cpu_smooth)}",
                 f"GPU load: {_fmt_pct(telemetry_gpu)}",
                 f"VRAM used: {_fmt_pct(telemetry_vram)}{vram_suffix}",
+                f"RAM used: {ram_suffix if ram_suffix else 'N/A'}",
             ]
 
              # ====================================================
@@ -1600,6 +1650,7 @@ def _run_editor_impl(
             COLOR_WARN = (255, 170, 60)    # оранжевый
             COLOR_BAD = (235, 80, 80)      # красный
             COLOR_NA = (160, 160, 170)     # N/A
+            COLOR_TEXT_DIM = COLOR_NA  # 🔧 МОЖНО МЕНЯТЬ: цвет для None/неизвестных значений
 
             def _grade_pct(p: float | None) -> tuple[int, int, int]:
                 if p is None:
@@ -1617,6 +1668,22 @@ def _run_editor_impl(
                 if ratio >= OK_FPS_RATIO:
                     return COLOR_OK
                 if ratio >= WARN_FPS_RATIO:
+                    return COLOR_WARN
+                return COLOR_BAD
+
+            def _grade_frame_ms(ms: float | None) -> tuple[int, int, int]:
+                """
+                🧠 ЛОГИКА:
+                16 ms  ≈ 60 FPS  → зелёный
+                33 ms  ≈ 30 FPS  → оранжевый
+                > 33   → красный
+                """
+                if ms is None:
+                    return COLOR_TEXT_DIM
+
+                if ms <= 18:
+                    return COLOR_OK
+                if ms <= 33:
                     return COLOR_WARN
                 return COLOR_BAD
 
@@ -1638,11 +1705,13 @@ def _run_editor_impl(
             IND_GAP = 8    # 🔧 МОЖНО МЕНЯТЬ: зазор между квадратиком и текстом
 
             # Цвет индикатора для каждой строки
-            line_colors: list[tuple[int, int, int]] = [
-                _grade_fps(fps_now),                 # FPS
-                _grade_pct(telemetry_cpu_smooth),    # CPU
-                _grade_pct(telemetry_gpu),           # GPU
-                _grade_pct(telemetry_vram),          # VRAM %
+            line_colors = [
+                _grade_fps(fps_now),               # FPS
+                _grade_frame_ms(telemetry_frame_ms_smooth if telemetry_frame_ms_smooth is not None else frame_ms),        # Frame time
+                _grade_pct(telemetry_cpu_smooth), # CPU
+                _grade_pct(telemetry_gpu),        # GPU
+                _grade_pct(telemetry_vram),       # VRAM
+                _grade_pct(telemetry_ram_pct),    # RAM
             ]
 
             surfaces = [font.render(t, True, TEXT_COLOR) for t in dbg]
