@@ -292,6 +292,43 @@ def _win_force_window_rect(x: int, y: int, w: int, h: int) -> None:
 
 
 # ============================================================
+# ✅ WinAPI: max/restore оконного режима (Windows only)
+# ============================================================
+def _win_is_maximized() -> bool:
+    """🧠 ЛОГИКА: True если окно сейчас максимизировано."""
+    if sys.platform != "win32":
+        return False
+    hwnd = _win_get_hwnd()
+    if not hwnd:
+        return False
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.IsZoomed.argtypes = [wintypes.HWND]
+        user32.IsZoomed.restype = wintypes.BOOL
+        return bool(user32.IsZoomed(wintypes.HWND(hwnd)))
+    except Exception:
+        return False
+
+
+def _win_set_maximized(maximize: bool) -> None:
+    """🧠 ЛОГИКА: принудительно maximize/restore (стабильный 'оконный на весь экран')."""
+    if sys.platform != "win32":
+        return
+    hwnd = _win_get_hwnd()
+    if not hwnd:
+        return
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        SW_MAXIMIZE = 3
+        SW_RESTORE = 9
+        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.ShowWindow.restype = wintypes.BOOL
+        user32.ShowWindow(wintypes.HWND(hwnd), SW_MAXIMIZE if maximize else SW_RESTORE)
+    except Exception:
+        return
+
+
+# ============================================================
 # ✅ APPLY DISPLAY MODE (как в менеджере проектов + жёсткий фикс рамки)
 # ============================================================
 def _apply_display_mode(
@@ -483,12 +520,42 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
     engine_settings.setdefault("fullscreen", False)
     engine_settings.setdefault("debug_overlay", False)
 
-    last_windowed_size = (int(window_width), int(window_height))  # 🔧 МОЖНО МЕНЯТЬ
+    # ✅ Оконный режим "на весь экран" (с рамкой) — отдельный persisted режим
+    engine_settings.setdefault("windowed_maximized", False)        # ✅ persisted
+    engine_settings.setdefault("windowed_w", int(window_width))    # ✅ persisted
+    engine_settings.setdefault("windowed_h", int(window_height))   # ✅ persisted
+    save_settings(engine_settings)
 
-    screen, window_width, window_height = _apply_display_mode(
-        windowed_size=last_windowed_size,
-        fullscreen_on=bool(engine_settings.get("fullscreen", False)),
+    # ✅ последний "нормальный" размер (когда не maximized)
+    last_windowed_size = (
+        int(engine_settings.get("windowed_w", window_width)),
+        int(engine_settings.get("windowed_h", window_height)),
     )
+
+    def _apply_display_from_settings() -> tuple[pygame.Surface, int, int]:
+        """
+        🧠 ЛОГИКА:
+        fullscreen=True  -> borderless (NOFRAME)
+        fullscreen=False -> окно с рамкой:
+            - если windowed_maximized=True -> размер экрана + ShowWindow(MAXIMIZE)
+            - иначе -> сохранённый windowed_w/windowed_h
+        """
+        info = pygame.display.Info()
+        screen_w, screen_h = info.current_w, info.current_h
+
+        if bool(engine_settings.get("fullscreen", False)):
+            return _apply_display_mode(windowed_size=last_windowed_size, fullscreen_on=True)
+
+        if bool(engine_settings.get("windowed_maximized", False)):
+            s, w, h = _apply_display_mode(windowed_size=(screen_w, screen_h), fullscreen_on=False)
+            _win_set_maximized(True)
+            return s, w, h
+
+        ww = int(engine_settings.get("windowed_w", last_windowed_size[0]))
+        wh = int(engine_settings.get("windowed_h", last_windowed_size[1]))
+        return _apply_display_mode(windowed_size=(ww, wh), fullscreen_on=False)
+
+    screen, window_width, window_height = _apply_display_from_settings()
 
     pygame.display.set_caption("Редактор сцены")
 
@@ -511,14 +578,66 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
     telemetry_vram_used_gb = None
     telemetry_vram_total_gb = None
 
+    # ✅ как часто сохранять состояние окна (размер/maximize)
+    WINDOW_STATE_SAVE_MS = 800  # 🔧 МОЖНО МЕНЯТЬ
+    last_window_state_save = 0
+
+    def _persist_window_state_now() -> None:
+        """
+        🧠 ЛОГИКА:
+        Форсируем сохранение состояния окна ПЕРЕД выходом из редактора сцены,
+        чтобы менеджер проектов получил актуальные fullscreen/windowed_maximized/size.
+        """
+        try:
+            cur_w, cur_h = screen.get_size()
+
+            if bool(engine_settings.get("fullscreen", False)):
+                save_settings(engine_settings)
+                return
+
+            is_max = _win_is_maximized()
+            engine_settings["windowed_maximized"] = bool(is_max)
+
+            if not is_max:
+                engine_settings["windowed_w"] = int(cur_w)
+                engine_settings["windowed_h"] = int(cur_h)
+
+            save_settings(engine_settings)
+        except Exception:
+            return
+
     running = True
     while running:
         clock.tick(fps)
         mouse_pos = pygame.mouse.get_pos()
 
         window_width, window_height = screen.get_size()
+
+        # ✅ Запоминаем maximize/размер (только когда fullscreen выключен)
         if not engine_settings.get("fullscreen", False):
-            last_windowed_size = (int(window_width), int(window_height))
+            now_ms = pygame.time.get_ticks()
+            if (now_ms - last_window_state_save) >= WINDOW_STATE_SAVE_MS:
+                last_window_state_save = now_ms
+
+                is_max = _win_is_maximized()
+                changed = False
+
+                if bool(engine_settings.get("windowed_maximized", False)) != bool(is_max):
+                    engine_settings["windowed_maximized"] = bool(is_max)
+                    changed = True
+
+                # ✅ если не maximized — сохраняем “нормальный” размер
+                if not is_max:
+                    last_windowed_size = (int(window_width), int(window_height))
+                    if int(engine_settings.get("windowed_w", 0)) != int(window_width):
+                        engine_settings["windowed_w"] = int(window_width)
+                        changed = True
+                    if int(engine_settings.get("windowed_h", 0)) != int(window_height):
+                        engine_settings["windowed_h"] = int(window_height)
+                        changed = True
+
+                if changed:
+                    save_settings(engine_settings)
 
         # ---------------- UI rects ----------------
         TOP_BTN_W = int(BUTTON_W * 0.72)  # 🔧 МОЖНО МЕНЯТЬ
@@ -556,14 +675,17 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
         # ---------------- Events ----------------
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                _persist_window_state_now()
                 return "quit"
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 # верхние кнопки
                 if exit_rect.collidepoint(event.pos):
+                    _persist_window_state_now()
                     return "quit"
 
                 if back_rect.collidepoint(event.pos) and not settings_open:
+                    _persist_window_state_now()
                     return "back"
 
                 if settings_rect.collidepoint(event.pos):
@@ -577,15 +699,21 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
                         settings_open = False
                         continue
 
-                    # клик по чекбоксам
                     if cb_full is not None and cb_full.collidepoint(event.pos):
+                        # ✅ сохраняем текущий размер ДО переключения
+                        cur_w, cur_h = screen.get_size()
+
                         engine_settings["fullscreen"] = not engine_settings.get("fullscreen", False)
+
+                        # ✅ если выключаем borderless fullscreen -> делаем "оконный на весь экран" (с рамкой) и запоминаем
+                        if not bool(engine_settings.get("fullscreen", False)):
+                            engine_settings["windowed_maximized"] = True
+                            engine_settings["windowed_w"] = int(cur_w)
+                            engine_settings["windowed_h"] = int(cur_h)
+
                         save_settings(engine_settings)
 
-                        screen, window_width, window_height = _apply_display_mode(
-                            windowed_size=last_windowed_size,
-                            fullscreen_on=bool(engine_settings.get("fullscreen", False)),
-                        )
+                        screen, window_width, window_height = _apply_display_from_settings()
                         continue
 
                     if cb_dbg is not None and cb_dbg.collidepoint(event.pos):
@@ -797,11 +925,11 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
 
                 y += surf.get_height() + LINE_GAP
 
-
         pygame.display.flip()
 
         # 🔧 МОЖНО МЕНЯТЬ: горячая клавиша сохранения сцены
         if pygame.key.get_pressed()[pygame.K_s]:
             save_scene(scene_path, scene_data)
 
+    _persist_window_state_now()
     return "back"
