@@ -714,6 +714,15 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
 
     screen, window_width, window_height = _apply_display_from_settings()
 
+    # ✅ маленький "loading frame" сразу после поднятия окна редактора
+    try:
+        from engine.loading_screen import draw_loading_overlay
+
+        draw_loading_overlay(screen, 100, "Загрузка…", "Редактор сцены")
+        pygame.display.flip()
+    except Exception:
+        pass
+
     pygame.display.set_caption("Редактор сцены")
 
     clock = pygame.time.Clock()

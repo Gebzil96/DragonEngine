@@ -82,11 +82,19 @@ def _setup_file_logging() -> None:
     🧠 ЛОГИКА:
     Когда запускаем через pythonw.exe — консоли нет.
     Перенаправляем stdout/stderr в engine_log.txt.
+
+    ✅ ВАЖНО:
+    - файл очищается при каждом запуске (mode="w")
     """
     log_path = Path(__file__).resolve().parent / "engine_log.txt"
 
     # ✅ line-buffered: пишет построчно
-    f = open(log_path, "a", encoding="utf-8", buffering=1)
+    # ✅ mode="w": очищаем лог при каждом запуске движка
+    f = open(log_path, "w", encoding="utf-8", buffering=1)
+
+    # ⚠️ ВАЖНО: держим ссылку глобально, чтобы файл точно не закрылся GC
+    global _DRAGONENGINE_LOG_FILE  # noqa: PLW0603
+    _DRAGONENGINE_LOG_FILE = f
 
     sys.stdout = f  # type: ignore[assignment]
     sys.stderr = f  # type: ignore[assignment]
@@ -94,6 +102,7 @@ def _setup_file_logging() -> None:
     print("\n" + "=" * 60)
     print("DragonEngine старт:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     print("=" * 60)
+
 
 
 # ============================================================
@@ -110,7 +119,23 @@ def main():
     # ✅ 2) Настраиваем логирование
     _setup_file_logging()
 
-    # ✅ 3) Импорты движка ПОСЛЕ single-instance
+    
+    # ============================================================
+    # ✅ LOADING SCREEN (до тяжёлых импортов)
+    # ============================================================
+    loader = None
+    try:
+        from engine.loading_screen import LoadingScreen
+
+        loader = LoadingScreen(title="DragonEngine")
+        loader.update(5, "Загрузка…", "Инициализация")
+    except Exception:
+        loader = None
+
+     # ✅ 3) Импорты движка ПОСЛЕ single-instance
+    if loader:
+        loader.update(20, "Загрузка…", "Чтение config_engine")
+
     from engine.config_engine import (  # 🔧 МОЖНО МЕНЯТЬ
         WINDOW_WIDTH,
         WINDOW_HEIGHT,
@@ -119,12 +144,22 @@ def main():
         PROJECTS_DIR,
     )
 
+    if loader:
+        loader.update(45, "Загрузка…", "Чтение настроек")
+
     from engine.engine_settings import load_settings  # ✅ НОВОЕ: глобальные настройки
+
+    if loader:
+        loader.update(70, "Загрузка…", "Запуск интерфейса")
 
     from editor.editor_app import run_editor  # 🧠 ЛОГИКА: запуск редактора
 
     # ✅ 4) Загружаем настройки
     settings = load_settings()
+
+    if loader:
+        loader.update(100, "Загрузка…", "Готово")
+        loader = None  # просто отпускаем ссылку — окно/pygame НЕ трогаем
 
     # ✅ 5) Запуск редактора
     run_editor(

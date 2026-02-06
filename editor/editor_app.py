@@ -62,6 +62,10 @@ try:
 except Exception:
     pynvml = None
 
+try:
+    from engine.loading_screen import draw_loading_overlay
+except Exception:
+    draw_loading_overlay = None  # type: ignore[assignment]
 
 # 🧠 ЛОГИКА: tkinter нужен только для диалогов
 root = tk.Tk()
@@ -526,7 +530,6 @@ def _run_editor_impl(
     
 ):
     pygame.init()
-
     # ✅ Настройки движка (persisted) — должны быть загружены ДО любых setdefault()
     engine_settings = load_settings()
 
@@ -548,7 +551,12 @@ def _run_editor_impl(
     # ============================================================
     # ✅ ДИСПЛЕЙ-РЕЖИМ (окно / fullscreen)
     # ============================================================
-    def _apply_display_mode(fullscreen_on: bool, window_size_override: tuple[int, int] | None = None):
+    def _apply_display_mode(
+    fullscreen_on: bool,
+    window_size_override: tuple[int, int] | None = None,
+    *,
+    reinit_display: bool = True,
+    ):
         """🧠 ЛОГИКА:
         Переключаем режим окна.
 
@@ -568,14 +576,30 @@ def _run_editor_impl(
             os.environ["SDL_VIDEO_WINDOW_POS"] = "0,0"
 
             # ✅ КЛЮЧ: переинициализация display, иначе SDL иногда “оставляет” старый размер окна
-            try:
-                pygame.display.quit()
-            except Exception:
-                pass
-            pygame.display.init()
+            if reinit_display:
+                try:
+                    pygame.display.quit()
+                except Exception:
+                    pass
+                pygame.display.init()
 
+            # ✅ На некоторых конфигурациях SDL может вернуть (0,0) ДО первого set_mode().
+            # Это и даёт “микро-окно” перед разворачиванием.
             info = pygame.display.Info()
-            screen_w, screen_h = info.current_w, info.current_h
+            screen_w, screen_h = int(info.current_w), int(info.current_h)
+
+            if screen_w <= 0 or screen_h <= 0:
+                # pygame 2.x: более надёжный способ получить размер рабочего стола
+                try:
+                    sizes = pygame.display.get_desktop_sizes()  # type: ignore[attr-defined]
+                    if sizes:
+                        screen_w, screen_h = int(sizes[0][0]), int(sizes[0][1])
+                except Exception:
+                    pass
+
+            # Fallback: если всё ещё что-то странное — не даём (0,0)
+            if screen_w <= 0 or screen_h <= 0:
+                screen_w, screen_h = int(window_width), int(window_height)
 
             if USE_BORDERLESS_FULLSCREEN:
                 flags_local = pygame.NOFRAME
@@ -597,11 +621,12 @@ def _run_editor_impl(
             flags_local |= pygame.RESIZABLE
 
         # ✅ КЛЮЧ: после NOFRAME рамка на Windows иногда не возвращается без re-init display
-        try:
-            pygame.display.quit()
-        except Exception:
-            pass
-        pygame.display.init()
+        if reinit_display:
+                try:
+                    pygame.display.quit()
+                except Exception:
+                    pass
+                pygame.display.init()
 
         # ✅ если пришли из fullscreen и хотим НЕ сжимать окно — используем текущий размер
         target_w, target_h = window_width, window_height
@@ -621,31 +646,33 @@ def _run_editor_impl(
         🧠 ЛОГИКА:
         - fullscreen=True  -> borderless (как сейчас)
         - fullscreen=False -> обычное окно:
-            * если windowed_maximized=True -> делаем размером экрана + ShowWindow(MAXIMIZE)
+            * если windowed_maximized=True -> создаём СРАЗУ большим (размер экрана), без WinAPI-Maximize (без мигания)
             * иначе -> используем сохранённый windowed_w/windowed_h
         """
         info = pygame.display.Info()
         screen_w, screen_h = info.current_w, info.current_h
 
         if bool(engine_settings.get("fullscreen", False)):
-            return _apply_display_mode(True)
+            # fullscreen: один set_mode — без лишних ресайзов
+            return _apply_display_mode(True, reinit_display=False)
 
-        if bool(engine_settings.get("windowed_maximized", False)):
-            s, w, h = _apply_display_mode(False, window_size_override=(screen_w, screen_h))
-            _win_set_maximized(True)
-            return s, w, h
+        # windowed
+        is_max = bool(engine_settings.get("windowed_maximized", False))
+        if is_max:
+            # ✅ ключ: сразу большой размер, НО без _win_set_maximized(True) (он часто даёт “прыжок/мигание”)
+            return _apply_display_mode(False, window_size_override=(screen_w, screen_h), reinit_display=False)
 
         ww = int(engine_settings.get("windowed_w", window_width))
         wh = int(engine_settings.get("windowed_h", window_height))
-        return _apply_display_mode(False, window_size_override=(ww, wh))
-
+        ww = max(320, ww)
+        wh = max(240, wh)
+        return _apply_display_mode(False, window_size_override=(ww, wh), reinit_display=False)
+    
     screen, win_w, win_h = _apply_display_from_settings()
-
     pygame.display.set_caption(window_title)
 
     # ✅ clock должен быть всегда, иначе упадём на clock.tick(fps)
     clock = pygame.time.Clock()
-
 
     font = pygame.font.SysFont(None, DEFAULT_FONT_SIZE)
     title_font = pygame.font.SysFont(None, TITLE_FONT_SIZE)
@@ -1029,7 +1056,26 @@ def _run_editor_impl(
             save_settings(engine_settings)
         except Exception:
             pass
+        
+        # ============================================================
+        # ✅ LOADING OVERLAY перед запуском редактора сцены
+        # ============================================================
+        try:
+            if draw_loading_overlay is not None:
+                pygame.event.pump()
+                draw_loading_overlay(screen, 5, "Загрузка…", f"Сцена: {scene_path.name}")
+                pygame.display.flip()
 
+                draw_loading_overlay(screen, 35, "Загрузка…", "Чтение настроек окна")
+                pygame.display.flip()
+
+                draw_loading_overlay(screen, 70, "Загрузка…", "Подготовка редактора сцены")
+                pygame.display.flip()
+
+                draw_loading_overlay(screen, 100, "Загрузка…", "Запуск")
+                pygame.display.flip()
+        except Exception:
+            pass
 
         result = run_scene_editor(scene_path, win_w, win_h, fps)
 
