@@ -134,6 +134,7 @@ def _fmt_gb(x: float | None) -> str:
 
 
 import pygame  # 🧠 ЛОГИКА: рендер/события
+from editor.scene_viewport import SceneViewport
 
 # ============================================================
 # ✅ ЖЁСТКИЙ ФИКС ФОКУСА ДЛЯ WINDOWS (как в менеджере проектов)
@@ -732,6 +733,8 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
     scene_data = load_scene(scene_path)
     selected_entity = None
     project_name = _get_project_name_from_scene_path(scene_path)
+     # ✅ Viewport (отдельная область для размещения объектов)
+    viewport = SceneViewport(pygame.Rect(0, 0, 10, 10))
 
     # ✅ состояние меню настроек
     settings_open = False
@@ -892,6 +895,22 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
         exit_rect = pygame.Rect(window_width - TOP_BTN_W - TOP_MARGIN, TOP_MARGIN, TOP_BTN_W, TOP_BTN_H)
         back_rect = pygame.Rect(exit_rect.x - TOP_BTN_W - UI_GAP_X, TOP_MARGIN, TOP_BTN_W, TOP_BTN_H)
 
+        # ---------------- Viewport rect ----------------
+        # 🔧 МОЖНО МЕНЯТЬ: зазор под верхними кнопками
+        VIEW_GAP_Y = 10
+        VIEW_INNER_PAD_X = 285 # 🔧 МОЖНО МЕНЯТЬ: уменьшение по ширине
+        VIEW_INNER_PAD_Y = 15  # 🔧 МОЖНО МЕНЯТЬ: уменьшение по высоте
+
+        top_y = settings_rect.bottom + VIEW_GAP_Y  # ✅ НИКОГДА не зависит от settings_open
+
+        viewport_rect = pygame.Rect(
+            EDGE_PAD + VIEW_INNER_PAD_X,
+            top_y + VIEW_INNER_PAD_Y,
+            max(10, window_width - (EDGE_PAD + VIEW_INNER_PAD_X) * 2),
+            max(10, window_height - (top_y + VIEW_INNER_PAD_Y) - (EDGE_PAD + VIEW_INNER_PAD_Y)),
+        )
+        viewport.set_rect(viewport_rect)
+
         # ---------------- Settings panel layout ----------------
         panel_rect = None
         cb_full = None
@@ -974,16 +993,22 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
                     # клик внутри панели, но не по пунктам
                     continue
 
-                # выбор сущности (только когда меню закрыто)
-                for entity in scene_data.get("entities", []):
-                    if entity.get("type") != "rect":
-                        continue
-                    r = pygame.Rect(entity["x"], entity["y"], entity["w"], entity["h"])
-                    if r.collidepoint(mouse_pos):
-                        selected_entity = entity
+                # выбор/drag сущности — только внутри viewport
+                if viewport.contains(event.pos):
+                    ent = viewport.pick_entity(event.pos, scene_data.get("entities", []))
+                    if ent is not None:
+                        selected_entity = ent
+                        viewport.start_drag(ent, event.pos)
+                    else:
+                        selected_entity = None
+                        viewport.clear_selection()
+                else:
+                    # клик вне viewport — снимаем выделение
+                    selected_entity = None
+                    viewport.clear_selection()
 
             if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                selected_entity = None
+                viewport.end_drag()
 
         # ---------------- Render ----------------
         screen.fill(EDITOR_BG_COLOR)
@@ -1001,10 +1026,13 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
         _draw_button(screen, font, back_rect, "К проектам", mouse_pos)
         _draw_exit_button(screen, font, exit_rect, "Выход", mouse_pos)
 
-        draw_entities(screen, scene_data.get("entities", []), font)
+         # Viewport: сетка + сущности + выделение
+        viewport.selected_entity = selected_entity
+        viewport.draw(screen, scene_data.get("entities", []), font, EDITOR_TEXT_COLOR)
 
-        if selected_entity:
-            handle_entity_move(mouse_pos, selected_entity)
+        # drag обновляем каждый кадр, пока зажата ЛКМ (состояние внутри viewport)
+        if pygame.mouse.get_pressed(num_buttons=3)[0]:
+            viewport.drag_to(mouse_pos)
 
         # settings panel render
         if settings_open and panel_rect is not None and cb_full is not None and cb_dbg is not None:
