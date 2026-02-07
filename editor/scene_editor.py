@@ -137,6 +137,27 @@ import pygame  # 🧠 ЛОГИКА: рендер/события
 from editor.scene_viewport import SceneViewport
 
 # ============================================================
+# ✅ Step-режим: внешние события (для единого main loop)
+# ============================================================
+_SCENE_EDITOR_EXTERNAL_EVENTS = None  # type: list[pygame.event.Event] | None
+
+
+def _scene_editor_set_external_events(events) -> None:
+    global _SCENE_EDITOR_EXTERNAL_EVENTS
+    _SCENE_EDITOR_EXTERNAL_EVENTS = events
+
+
+def _scene_editor_get_events():
+    """Если события переданы извне — используем их один раз, иначе берём из pygame."""
+    global _SCENE_EDITOR_EXTERNAL_EVENTS
+    if _SCENE_EDITOR_EXTERNAL_EVENTS is not None:
+        ev = _SCENE_EDITOR_EXTERNAL_EVENTS
+        _SCENE_EDITOR_EXTERNAL_EVENTS = None
+        return ev
+    return pygame.event.get()
+
+
+# ============================================================
 # ✅ ЖЁСТКИЙ ФИКС ФОКУСА ДЛЯ WINDOWS (как в менеджере проектов)
 # ============================================================
 _user32 = ctypes.windll.user32
@@ -444,6 +465,8 @@ def _win_set_maximized(maximize: bool) -> None:
 def _apply_display_mode(
     windowed_size: tuple[int, int],
     fullscreen_on: bool,
+    *,
+    reinit_display: bool = False,  # 🔧 МОЖНО МЕНЯТЬ: True = старое поведение (quit/init)
 ) -> tuple[pygame.Surface, int, int]:
     """
     🧠 ЛОГИКА:
@@ -454,11 +477,16 @@ def _apply_display_mode(
     WINDOW_RESIZABLE = True           # 🔧 МОЖНО МЕНЯТЬ
 
     if fullscreen_on:
-        try:
-            pygame.display.quit()
-        except Exception:
-            pass
-        pygame.display.init()
+        if reinit_display:
+            try:
+                pygame.display.quit()
+            except Exception:
+                pass
+            pygame.display.init()
+        else:
+            # ✅ гарантируем, что display инициализирован, но НЕ пересоздаём окно
+            if not pygame.display.get_init():
+                pygame.display.init()
 
         info = pygame.display.Info()
         screen_w, screen_h = info.current_w, info.current_h
@@ -477,11 +505,15 @@ def _apply_display_mode(
         return screen, w, h
 
     # ---- оконный режим ----
-    try:
-        pygame.display.quit()
-    except Exception:
-        pass
-    pygame.display.init()
+    if reinit_display:
+        try:
+            pygame.display.quit()
+        except Exception:
+            pass
+        pygame.display.init()
+    else:
+        if not pygame.display.get_init():
+            pygame.display.init()
 
     flags = 0
     if WINDOW_RESIZABLE:
@@ -665,7 +697,7 @@ _draw_panel_like_manager = _draw_panel
 # ============================================================
 # ✅ Главный цикл
 # ============================================================
-def run_scene_editor(scene_path, window_width, window_height, fps):
+def _scene_editor_gen(scene_path, window_width, window_height, fps, screen=None):
     """
     Возвраты:
     - "quit" — закрыть весь движок
@@ -713,7 +745,11 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
         wh = int(engine_settings.get("windowed_h", last_windowed_size[1]))
         return _apply_display_mode(windowed_size=(ww, wh), fullscreen_on=False)
 
-    screen, window_width, window_height = _apply_display_from_settings()
+    if screen is None:
+        screen, window_width, window_height = _apply_display_from_settings()
+    else:
+        # ✅ Используем уже созданный display surface (единый loop без пересоздания окна)
+        window_width, window_height = screen.get_size()
 
     # ✅ маленький "loading frame" сразу после поднятия окна редактора
     try:
@@ -936,7 +972,7 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
             cb_dbg = pygame.Rect(cb_x, row2_y, cb_size, cb_size)
 
         # ---------------- Events ----------------
-        for event in pygame.event.get():
+        for event in _scene_editor_get_events():
             if event.type == pygame.QUIT:
                 if _confirm_exit_scene_editor():
                     _persist_window_state_now()
@@ -982,7 +1018,11 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
 
                         save_settings(engine_settings)
 
-                        screen, window_width, window_height = _apply_display_from_settings()
+                        if screen is None:
+                            screen, window_width, window_height = _apply_display_from_settings()
+                        else:
+                            # ✅ Используем уже созданный display surface (единый loop без пересоздания окна)
+                            window_width, window_height = screen.get_size()
                         continue
 
                     if cb_dbg is not None and cb_dbg.collidepoint(event.pos):
@@ -1255,6 +1295,52 @@ def run_scene_editor(scene_path, window_width, window_height, fps):
         # 🔧 МОЖНО МЕНЯТЬ: горячая клавиша сохранения сцены
         if pygame.key.get_pressed()[pygame.K_s]:
             save_scene(scene_path, scene_data)
+        yield None
 
     _persist_window_state_now()
     return "back"
+# ============================================================
+# ✅ Step-API (init/step) + fallback run_scene_editor
+# ============================================================
+def scene_editor_init(scene_path, window_width, window_height, fps, screen=None):
+    """Инициализация step-режима. Возвращает state-словарь."""
+    gen = _scene_editor_gen(scene_path, window_width, window_height, fps, screen=screen)
+    return {
+        "gen": gen,
+        "done": False,
+    }
+
+
+def scene_editor_step(state, events=None):
+    """
+    Один шаг редактора сцены.
+
+    Возвраты:
+    - None    — продолжать
+    - "back"  — вернуться в менеджер проектов
+    - "quit"  — закрыть весь движок
+    """
+    if state.get("done"):
+        return "back"
+
+    if events is not None:
+        _scene_editor_set_external_events(events)
+
+    try:
+        next(state["gen"])  # кадр
+        return None
+    except StopIteration as e:
+        state["done"] = True
+        return e.value if e.value is not None else "back"
+
+
+def run_scene_editor(scene_path, window_width, window_height, fps):
+    """
+    Fallback-API: старое поведение (блокирующий запуск),
+    но внутри использует step-режим.
+    """
+    st = scene_editor_init(scene_path, window_width, window_height, fps)
+    while True:
+        action = scene_editor_step(st, events=None)
+        if action in ("back", "quit"):
+            return action

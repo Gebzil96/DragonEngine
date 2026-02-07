@@ -47,7 +47,7 @@ from project_manager import (
     delete_project,
 )
 
-from editor.scene_editor import run_scene_editor
+from editor.scene_editor import run_scene_editor, scene_editor_init, scene_editor_step
 
 from engine_settings import load_settings, save_settings  # ✅ глобальные настройки
 
@@ -63,13 +63,34 @@ except Exception:
     pynvml = None
 
 try:
-    from engine.loading_screen import draw_loading_overlay
+    from engine.loading_screen import draw_loading_overlay, run_fade_transition
 except Exception:
     draw_loading_overlay = None  # type: ignore[assignment]
+    run_fade_transition = None   # type: ignore[assignment]
 
 # 🧠 ЛОГИКА: tkinter нужен только для диалогов
 root = tk.Tk()
 root.withdraw()
+
+# ============================================================
+# ✅ Step-режим Project Manager: внешние события (для единого main loop)
+# ============================================================
+_PM_EXTERNAL_EVENTS = None  # type: list[pygame.event.Event] | None
+
+
+def _pm_set_external_events(events) -> None:
+    global _PM_EXTERNAL_EVENTS
+    _PM_EXTERNAL_EVENTS = events
+
+
+def _pm_get_events():
+    """Если события переданы извне — используем их один раз, иначе берём из pygame."""
+    global _PM_EXTERNAL_EVENTS
+    if _PM_EXTERNAL_EVENTS is not None:
+        ev = _PM_EXTERNAL_EVENTS
+        _PM_EXTERNAL_EVENTS = None
+        return ev
+    return pygame.event.get()
 
 
 # ============================================================
@@ -466,8 +487,7 @@ def _restore_pygame_focus(timeout_sec: float = 1.5) -> None:
             # ✅ ВАЖНО: SW_RESTORE может сбрасывать maximized → окно “усыхает”.
             # Поэтому аккуратно выбираем режим показа.
             SW_MAXIMIZE = 3
-            SW_SHOW = 5
-
+            
             try:
                 _user32.IsIconic.argtypes = [wintypes.HWND]
                 _user32.IsIconic.restype = wintypes.BOOL
@@ -477,12 +497,13 @@ def _restore_pygame_focus(timeout_sec: float = 1.5) -> None:
                 was_minimized = bool(_user32.IsIconic(hwnd))
                 was_maximized = bool(_user32.IsZoomed(hwnd))
 
+                # ✅ КЛЮЧ: не трогаем ShowWindow(), если окно уже в нормальном состоянии
+                # иначе Windows может "пересчитать" restored-rect и окно начнёт усыхать после модалок.
                 if was_minimized:
                     _user32.ShowWindow(hwnd, _SW_RESTORE)
                 elif was_maximized:
                     _user32.ShowWindow(hwnd, SW_MAXIMIZE)
-                else:
-                    _user32.ShowWindow(hwnd, SW_SHOW)
+                # else: ничего — просто вернём фокус ниже
             except Exception:
                 # fallback: старое поведение (на всякий случай)
                 _user32.ShowWindow(hwnd, _SW_RESTORE)
@@ -520,7 +541,7 @@ def _restore_pygame_focus(timeout_sec: float = 1.5) -> None:
 # ============================================================
 # ✅ ВНУТРЕННЯЯ РЕАЛИЗАЦИЯ
 # ============================================================
-def _run_editor_impl(
+def _project_manager_gen(
     window_width: int,
     window_height: int,
     window_title: str,
@@ -635,6 +656,17 @@ def _run_editor_impl(
 
         local_screen = pygame.display.set_mode((target_w, target_h), flags_local)
 
+        # ✅ иногда после выхода из NOFRAME Windows не сразу применяет стиль декораций
+        # поэтому делаем небольшой "пинок" (pump + повтор декораций) — без новых WinAPI-функций
+        try:
+            pygame.event.pump()
+        except Exception:
+            pass
+        try:
+            time.sleep(0.01)
+        except Exception:
+            pass
+
         # ✅ вернуть рамку/заголовок после NOFRAME (Windows)
         _win_force_windowed_decorations()
 
@@ -654,19 +686,31 @@ def _run_editor_impl(
 
         if bool(engine_settings.get("fullscreen", False)):
             # fullscreen: один set_mode — без лишних ресайзов
-            return _apply_display_mode(True, reinit_display=False)
+            return _apply_display_mode(True, reinit_display=True)
 
         # windowed
         is_max = bool(engine_settings.get("windowed_maximized", False))
         if is_max:
-            # ✅ ключ: сразу большой размер, НО без _win_set_maximized(True) (он часто даёт “прыжок/мигание”)
-            return _apply_display_mode(False, window_size_override=(screen_w, screen_h), reinit_display=False)
+            scr, w, h = _apply_display_mode(
+                False,
+                window_size_override=(screen_w, screen_h),
+                reinit_display=True,
+            )
+
+            # ✅ КЛЮЧ: делаем именно Windows-maximize, чтобы состояние "□" было настоящим
+            _win_set_maximized(True)
+
+            # после maximize размер может чуть измениться → перечитаем
+            w, h = scr.get_size()
+            return scr, w, h
 
         ww = int(engine_settings.get("windowed_w", window_width))
         wh = int(engine_settings.get("windowed_h", window_height))
         ww = max(320, ww)
         wh = max(240, wh)
-        return _apply_display_mode(False, window_size_override=(ww, wh), reinit_display=False)
+
+        # ✅ ключ: после borderless fullscreen (NOFRAME) рамка может не вернуться без display re-init
+        return _apply_display_mode(False, window_size_override=(ww, wh), reinit_display=True)
     
     screen, win_w, win_h = _apply_display_from_settings()
     pygame.display.set_caption(window_title)
@@ -782,6 +826,12 @@ def _run_editor_impl(
     engine_settings.setdefault("debug_overlay", False)  # ✅ DEBUG-оверлей (persisted)
      # ✅ состояние окна настроек должно быть всегда определено
     settings_open = False
+     # ============================================================
+    # ✅ РЕЖИМЫ ЭКРАНОВ (единый main loop: PM <-> Scene Editor)
+    # ============================================================
+    mode = "pm"  # "pm" | "scene"
+    scene_state = None  # type: dict | None
+    prev_display_sig = None  # type: tuple | None  # ✅ для избегания лишнего set_mode при возврате
      # ============================================================
     # ✅ TELEMETRY CACHE (чтобы не дергалось каждый кадр)
     # ============================================================
@@ -1028,7 +1078,7 @@ def _run_editor_impl(
     # ✅ Запуск сцены + возврат в менеджер
     # ============================================================
     def _launch_scene(scene_path: Path) -> None:
-        nonlocal screen, status_message, win_w, win_h, fullscreen
+        nonlocal screen, status_message, win_w, win_h, fullscreen, mode, scene_state, prev_display_sig
 
         # ============================================================
         # ✅ Перед запуском редактора сцены: фиксируем текущее состояние окна в persisted settings
@@ -1077,26 +1127,61 @@ def _run_editor_impl(
         except Exception:
             pass
 
-        result = run_scene_editor(scene_path, win_w, win_h, fps)
+        # ============================================================
+        # ✅ Запуск редактора сцены (step-режим, без блокировки основного окна)
+        # ============================================================
+        try:
+            prev_display_sig = (
+                bool(engine_settings.get("fullscreen", False)),
+                int(win_w),
+                int(win_h),
+                bool(engine_settings.get("windowed_maximized", False)),
+            )
 
-        if result == "quit":
-            force_quit(0)
+            scene_state = scene_editor_init(scene_path, win_w, win_h, fps, screen=screen)
+            mode = "scene"
+
+            # 🧽 очистим хвост событий, чтобы клик после модалки не "пробивал" в сцену
+            pygame.event.clear()
+            pygame.event.pump()
+
+            status_message = f"Открыта сцена: {scene_path.name}"
+            return
+        except Exception:
+            # Fallback: старый блокирующий запуск (на всякий случай)
+            result = run_scene_editor(scene_path, win_w, win_h, fps)
+            if result == "quit":
+                force_quit(0)
+            _return_to_project_manager_after_scene()
+            status_message = "Возврат в менеджер проектов."
+            return
+
+    def _return_to_project_manager_after_scene() -> None:
+        """✅ восстановить режим окна/настройки менеджера после выхода из редактора сцены."""
+        nonlocal screen, win_w, win_h, fullscreen, prev_display_sig
 
         pygame.display.set_caption(window_title)
 
-        # ✅ ВАЖНО: редактор сцены мог поменять fullscreen/windowed_maximized/размер — перечитываем settings
+        # ✅ редактор сцены мог поменять fullscreen/windowed_maximized/размер — перечитываем settings
         engine_settings.update(load_settings())
 
-        # ✅ ВАЖНО: применяем режим 1:1 как при старте менеджера (учитывает windowed_maximized + windowed_w/h)
-        screen, win_w, win_h = _apply_display_from_settings()
+        # ✅ применяем режим 1:1 как при старте менеджера (учитывает windowed_maximized + windowed_w/h)
+        new_sig = (
+            bool(engine_settings.get("fullscreen", False)),
+            int(engine_settings.get("windowed_w", win_w)),
+            int(engine_settings.get("windowed_h", win_h)),
+            bool(engine_settings.get("windowed_maximized", False)),
+        )
+
+        # ✅ если настройки окна не менялись — не трогаем display (макс. плавно)
+        if prev_display_sig is None or new_sig != prev_display_sig:
+            screen, win_w, win_h = _apply_display_from_settings()
         fullscreen = bool(engine_settings.get("fullscreen", False))
 
         _update_exit_button()
 
         pygame.event.clear()
         pygame.event.pump()
-
-        status_message = "Возврат в менеджер проектов."
 
     # ============================================================
     # ✅ ДЕЙСТВИЯ КНОПОК (обёртка modal добавлена)
@@ -1254,6 +1339,29 @@ def _run_editor_impl(
 
     running = True
     while running:
+        # ============================================================
+        # ✅ SCENE EDITOR MODE (step-режим внутри общего цикла)
+        # ============================================================
+        if mode == "scene" and scene_state is not None:
+            clock.tick(fps)
+            events = pygame.event.get()
+            action = scene_editor_step(scene_state, events=events)
+
+            if action == "quit":
+                force_quit(0)
+
+            if action == "back":
+                scene_state = None
+                mode = "pm"
+                _return_to_project_manager_after_scene()
+                status_message = "Возврат в менеджер проектов."
+            yield None
+            # не выполняем логику менеджера проектов в этом кадре
+            continue
+
+        # ============================================================
+        # ✅ PROJECT MANAGER MODE
+        # ============================================================
         clock.tick(fps)
         mouse_pos = pygame.mouse.get_pos()
 
@@ -1292,7 +1400,7 @@ def _run_editor_impl(
 
         all_projects = list_all_projects()
 
-        for event in pygame.event.get():
+        for event in _pm_get_events():
             if event.type == pygame.QUIT:
                 if _confirm_exit():
                     force_quit(0)
@@ -1846,6 +1954,41 @@ def _run_editor_impl(
     pygame.quit()
 
 
+
+# ============================================================
+# ✅ ВНУТРЕННЯЯ РЕАЛИЗАЦИЯ (shim для совместимости)
+# ============================================================
+def _run_editor_impl(
+    window_width: int,
+    window_height: int,
+    window_title: str,
+    fps: int,
+    projects_dir: Path,
+    fullscreen: bool = False,
+):
+    """
+    🧠 ЛОГИКА:
+    Раньше engine_main.py вызывал run_editor() → _run_editor_impl(...).
+    После перехода на единый main loop / step-режим мы держим совместимость:
+
+    - _run_editor_impl теперь просто запускает step-менеджер проектов в блокирующем режиме.
+    - Сигнатура сохранена, чтобы старые вызовы не ломались.
+    """
+    st = project_manager_init(
+        window_width=window_width,
+        window_height=window_height,
+        window_title=window_title,
+        fps=fps,
+        projects_dir=projects_dir,
+        fullscreen=fullscreen,
+    )
+
+    while True:
+        action = project_manager_step(st, events=None)
+        if action == "quit":
+            return
+
+
 def run_editor(*args, **kwargs):
     if len(args) == 1 and isinstance(args[0], dict) and not kwargs:
         kwargs = dict(args[0])
@@ -1896,3 +2039,46 @@ def run_editor(*args, **kwargs):
         projects_dir=projects_dir,
         fullscreen=bool(fullscreen),
     )
+# ============================================================
+# ✅ Step-API Project Manager (init/step) + fallback run_editor
+# ============================================================
+def project_manager_init(*args, **kwargs):
+    """
+    Инициализация step-режима менеджера проектов.
+    Возвращает state-словарь с генератором.
+    """
+    gen = _project_manager_gen(*args, **kwargs)
+    return {"gen": gen, "done": False}
+
+
+def project_manager_step(state, events=None):
+    """
+    Один шаг менеджера проектов.
+    Возврат:
+      - None   — продолжать
+      - "quit" — закрыть движок
+    """
+    if state.get("done"):
+        return "quit"
+
+    if events is not None:
+        _pm_set_external_events(events)
+
+    try:
+        yielded = next(state["gen"])
+        return yielded
+    except StopIteration as e:
+        state["done"] = True
+        return e.value if e.value is not None else "quit"
+
+
+def run_editor_blocking(*args, **kwargs):
+    """
+    Блокирующий запуск менеджера проектов (legacy fallback).
+    но внутри использует step-режим.
+    """
+    st = project_manager_init(*args, **kwargs)
+    while True:
+        action = project_manager_step(st, events=None)
+        if action == "quit":
+            return
