@@ -573,6 +573,33 @@ def _project_manager_gen(
     # ============================================================
     # ✅ ДИСПЛЕЙ-РЕЖИМ (окно / fullscreen)
     # ============================================================
+    
+    def _display_matches(*, want_borderless: bool, want_size: tuple[int, int]) -> bool:
+        """
+        🧠 ЛОГИКА:
+        Если loader уже создал окно в нужном size/flags — НЕ трогаем display вообще.
+        Это убирает "блимк" на 99% (Windows/SDL пересоздание окна).
+        """
+        try:
+            surf = pygame.display.get_surface()
+            if surf is None:
+                return False
+
+            cur_size = surf.get_size()
+            if tuple(cur_size) != tuple(want_size):
+                return False
+
+            # pygame 2.x: флаги текущего окна
+            try:
+                cur_flags = pygame.display.get_window_flags()
+            except Exception:
+                cur_flags = 0
+
+            has_noframe = bool(cur_flags & pygame.NOFRAME)
+            return has_noframe == bool(want_borderless)
+        except Exception:
+            return False
+    
     def _apply_display_mode(
     fullscreen_on: bool,
     window_size_override: tuple[int, int] | None = None,
@@ -596,6 +623,27 @@ def _project_manager_gen(
             # ✅ позиция окна (на всякий случай)
             os.environ["SDL_VIDEO_CENTERED"] = "0"
             os.environ["SDL_VIDEO_WINDOW_POS"] = "0,0"
+
+            # ✅ если окно уже в borderless fullscreen нужного размера — ничего не пересоздаём
+            info = pygame.display.Info()
+            screen_w, screen_h = int(info.current_w), int(info.current_h)
+
+            if screen_w <= 0 or screen_h <= 0:
+                 try:
+                     sizes = pygame.display.get_desktop_sizes()  # type: ignore[attr-defined]
+                     if sizes:
+                         screen_w, screen_h = int(sizes[0][0]), int(sizes[0][1])
+                 except Exception:
+                     pass
+
+            if screen_w <= 0 or screen_h <= 0:
+                 screen_w, screen_h = int(window_width), int(window_height)
+
+            if _display_matches(want_borderless=True, want_size=(screen_w, screen_h)):
+                 surf = pygame.display.get_surface()
+                 if surf is not None:
+                     w, h = surf.get_size()
+                     return surf, int(w), int(h)
 
             # ✅ КЛЮЧ: переинициализация display, иначе SDL иногда “оставляет” старый размер окна
             if reinit_display:
@@ -686,8 +734,8 @@ def _project_manager_gen(
         screen_w, screen_h = info.current_w, info.current_h
 
         if bool(engine_settings.get("fullscreen", False)):
-            # fullscreen: один set_mode — без лишних ресайзов
-            return _apply_display_mode(True, reinit_display=True)
+             # fullscreen: если loader уже создал правильный borderless — не делаем reinit_display
+             return _apply_display_mode(True, reinit_display=False)
 
         # windowed
         is_max = bool(engine_settings.get("windowed_maximized", False))

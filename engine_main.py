@@ -121,20 +121,78 @@ def main():
 
     
     # ============================================================
-    # ✅ LOADING SCREEN (до тяжёлых импортов)
+    # ✅ Быстрые импорты ДО LOADER: чтобы сразу выставить правильный режим окна
+    # (иначе после 99% будет дерганье при смене set_mode/reinit_display)
+    # ============================================================
+    settings = {}
+    WINDOW_WIDTH = 1280
+    WINDOW_HEIGHT = 720
+    WINDOW_TITLE = "DragonEngine"
+    FPS = 60
+    PROJECTS_DIR = None
+
+    try:
+        from engine.config_engine import (  # 🔧 МОЖНО МЕНЯТЬ
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+            WINDOW_TITLE,
+            FPS,
+            PROJECTS_DIR,
+        )
+    except Exception:
+        pass
+
+    try:
+        from engine.engine_settings import load_settings  # ✅ глобальные настройки
+        settings = load_settings() or {}
+    except Exception:
+        settings = {}
+
+    # ============================================================
+    # ✅ LOADING SCREEN (до тяжёлых импортов) + "честные проценты"
     # ============================================================
     loader = None
+    boot = None
     try:
-        from engine.loading_screen import LoadingScreen
+        from engine.loading_screen import LoadingScreen, BootProgress, BootProgressPlan
 
-        loader = LoadingScreen(title="DragonEngine")
-        loader.update(5, "Загрузка…", "Инициализация")
+        fs = bool(settings.get("fullscreen", False))
+        is_max = bool(settings.get("windowed_maximized", False))
+
+        # ✅ если fullscreen: borderless + размер рабочего стола (size=None)
+        # ✅ если windowed: обычное окно с рамкой; размер из settings (или дефолты)
+        if fs:
+            loader = LoadingScreen(title="DragonEngine", size=None, borderless=True)
+        else:
+            if is_max:
+                # окно "на весь экран" (но с рамкой) — берём desktop size через size=None
+                loader = LoadingScreen(title="DragonEngine", size=None, borderless=False)
+            else:
+                ww = int(settings.get("windowed_w", WINDOW_WIDTH))
+                wh = int(settings.get("windowed_h", WINDOW_HEIGHT))
+                ww = max(320, ww)
+                wh = max(240, wh)
+                loader = LoadingScreen(title="DragonEngine", size=(ww, wh), borderless=False)
+
+        boot = BootProgress(
+            loader,
+            plan=BootProgressPlan(
+                # 🔧 МОЖНО МЕНЯТЬ: если захочешь подкрутить "ощущение линейности"
+                est_imports_s=0.55,
+                est_settings_s=0.18,
+                est_editor_import_s=0.45,
+                est_before_editor_s=0.15,
+            ),
+            title="Загрузка…",
+        )
+        boot.ping("Инициализация", floor_pct=1.0)
     except Exception:
         loader = None
+        boot = None
 
-     # ✅ 3) Импорты движка ПОСЛЕ single-instance
-    if loader:
-        loader.update(20, "Загрузка…", "Чтение config_engine")
+    # ✅ 3) Импорты движка ПОСЛЕ single-instance
+    if boot:
+        boot.ping("Чтение config_engine", floor_pct=2.0)
 
     from engine.config_engine import (  # 🔧 МОЖНО МЕНЯТЬ
         WINDOW_WIDTH,
@@ -144,22 +202,29 @@ def main():
         PROJECTS_DIR,
     )
 
-    if loader:
-        loader.update(45, "Загрузка…", "Чтение настроек")
+    if boot:
+        boot.ping("Чтение настроек", floor_pct=8.0)
 
-    from engine.engine_settings import load_settings  # ✅ НОВОЕ: глобальные настройки
-
-    if loader:
-        loader.update(70, "Загрузка…", "Запуск интерфейса")
-
-    from editor.editor_app import run_editor  # 🧠 ЛОГИКА: запуск редактора
+    from engine.engine_settings import load_settings  # ✅ глобальные настройки
 
     # ✅ 4) Загружаем настройки
     settings = load_settings()
 
-    if loader:
-        loader.update(100, "Загрузка…", "Готово")
-        loader = None  # просто отпускаем ссылку — окно/pygame НЕ трогаем
+    if boot:
+        boot.ping("Запуск интерфейса", floor_pct=15.0)
+
+    from editor.editor_app import run_editor  # 🧠 ЛОГИКА: запуск редактора
+
+    # ВАЖНО:
+    # 100% ставим только прямо перед run_editor — чтобы "100%" == "сейчас откроется менеджер"
+    if boot:
+        # 99% НЕ показываем на отдельном LoadingScreen-окне:
+        # именно на стыке "закрываем loader-окно / создаём main window" иногда бывает 1 кадр-миг.
+        # 99% и 100% уже рисуются в окне менеджера (см. editor_app.py).
+        boot.ping("Открытие менеджера проектов", floor_pct=98.0)
+        # освобождаем ссылку; display не трогаем
+        loader = None
+        boot = None
 
     # ✅ 5) Запуск редактора
     run_editor(
