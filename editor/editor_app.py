@@ -63,9 +63,10 @@ except Exception:
     pynvml = None
 
 try:
-    from engine.loading_screen import draw_loading_overlay, run_fade_transition
+    from engine.loading_screen import draw_loading_overlay, draw_loading_badge, run_fade_transition
 except Exception:
     draw_loading_overlay = None  # type: ignore[assignment]
+    draw_loading_badge = None    # type: ignore[assignment]
     run_fade_transition = None   # type: ignore[assignment]
 
 # 🧠 ЛОГИКА: tkinter нужен только для диалогов
@@ -715,6 +716,18 @@ def _project_manager_gen(
     screen, win_w, win_h = _apply_display_from_settings()
     pygame.display.set_caption(window_title)
 
+    # ============================================================
+    # ✅ ПЕРЕХОДНЫЙ КАДР: держим "Loading" (99%) до первого реального рендера PM
+    # (убирает чёрный экран между загрузкой и менеджером проектов)
+    # ============================================================
+    try:
+        if draw_loading_overlay is not None:
+            pygame.event.pump()
+            draw_loading_overlay(screen, 99, "Загрузка…", "Менеджер проектов")
+            pygame.display.flip()
+    except Exception:
+        pass
+
     # ✅ clock должен быть всегда, иначе упадём на clock.tick(fps)
     clock = pygame.time.Clock()
 
@@ -774,6 +787,27 @@ def _project_manager_gen(
         overlay = pygame.Surface((w, h), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, int(alpha)))
         screen.blit(overlay, (0, 0))
+    
+    def _draw_ready_100_badge(surface: pygame.Surface) -> None:
+        """✅ 100% ровно на первом реальном кадре PM (и только 1 кадр)."""
+        label = "100%"
+        pad_x, pad_y = 10, 6
+        margin = 14
+
+        txt = font.render(label, True, EDITOR_TEXT_COLOR)
+        tw, th = txt.get_size()
+
+        box_w = tw + pad_x * 2
+        box_h = th + pad_y * 2
+        x = surface.get_width() - box_w - margin
+        y = margin
+
+        bg = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+        bg.fill((10, 10, 14, 210))
+        surface.blit(bg, (x, y))
+
+        pygame.draw.rect(surface, BUTTON_BORDER_COLOR, (x, y, box_w, box_h), width=1, border_radius=10)
+        surface.blit(txt, (x + pad_x, y + pad_y))
 
     def _call_modal(fn, *args, overlay_text: str = "Открыто окно…", **kwargs):
         """
@@ -832,6 +866,7 @@ def _project_manager_gen(
     mode = "pm"  # "pm" | "scene"
     scene_state = None  # type: dict | None
     prev_display_sig = None  # type: tuple | None  # ✅ для избегания лишнего set_mode при возврате
+    pm_bootstrap_badge = True  # ✅ показать "100%" на первом реальном кадре менеджера
      # ============================================================
     # ✅ TELEMETRY CACHE (чтобы не дергалось каждый кадр)
     # ============================================================
@@ -1354,6 +1389,7 @@ def _project_manager_gen(
                 scene_state = None
                 mode = "pm"
                 _return_to_project_manager_after_scene()
+                pm_bootstrap_badge = True  # ✅ снова покажем "100%" на первом кадре после возврата
                 status_message = "Возврат в менеджер проектов."
             yield None
             # не выполняем логику менеджера проектов в этом кадре
@@ -1948,6 +1984,17 @@ def _project_manager_gen(
 
             label2 = font.render("Отладочная информация", True, EDITOR_TEXT_COLOR)
             screen.blit(label2, (debug_rect.right + 10, debug_rect.y - 2))
+
+        # ✅ 100% ровно на первом реальном кадре PM
+        if pm_bootstrap_badge:
+            try:
+                if draw_loading_badge is not None:
+                    draw_loading_badge(screen, 100, "Загрузка…", "Готово")
+                else:
+                    _draw_ready_100_badge(screen)
+            except Exception:
+                pass
+            pm_bootstrap_badge = False
 
         pygame.display.flip()
 
